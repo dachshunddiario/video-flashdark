@@ -12,7 +12,7 @@ export type SocialPage = {
   id: string;
   handle: string;
   platform: Platform;
-  niche?: string;
+  niche?: string | undefined;
   isCompetitor: boolean;
   createdAt: string;
 };
@@ -22,8 +22,8 @@ export type FollowerSnapshot = {
   pageId: string;
   date: string; // yyyy-mm-dd
   followers: number;
-  posts?: number;
-  engagement?: number; // %
+  posts?: number | undefined;
+  engagement?: number | undefined; // %
 };
 
 export type Template = {
@@ -73,7 +73,7 @@ export type QueueItem = {
   sizeMB: number;
   status: "pendente" | "processando" | "concluido" | "erro";
   progress: number;
-  message?: string;
+  message?: string | undefined;
 };
 
 export type AppSettings = {

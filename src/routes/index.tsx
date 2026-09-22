@@ -90,8 +90,8 @@ function Dashboard() {
 
   const growth = useMemo(() => {
     if (series.length < 2) return 0;
-    const first = series[0].followers;
-    const last = series[series.length - 1].followers;
+    const first = series[0]?.followers ?? 0;
+    const last = series[series.length - 1]?.followers ?? 0;
     return first ? ((last - first) / first) * 100 : 0;
   }, [series]);
 
