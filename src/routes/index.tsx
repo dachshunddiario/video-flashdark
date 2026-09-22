@@ -40,7 +40,7 @@ export const Route = createFileRoute("/")({
       },
     ],
   }),
-  component: Dashboard;
+  component: Dashboard,
 });
 
 const inputCls =
