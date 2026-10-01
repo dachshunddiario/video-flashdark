@@ -1,10 +1,11 @@
 import { Link, useRouterState } from "@tanstack/react-router";
-import { LayoutDashboard, Clapperboard, HardDrive } from "lucide-react";
+import { LayoutDashboard, Clapperboard, HardDrive, Image as ImageIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const items = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard },
-  { to: "/editor", label: "Editor", icon: Clapperboard },
+  { to: "/editor", label: "Video Flash", icon: Clapperboard },
+  { to: "/imagem-flash", label: "Imagem Flash", icon: ImageIcon },
 ] as const;
 
 export function AppSidebar() {

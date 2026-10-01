@@ -1,0 +1,72 @@
+{
+  "name": "Padrão Reels / Shorts (9:16)",
+  "background": {
+    "color": "#000000",
+    "type": "solid"
+  },
+  "profilePic": {
+    "enabled": true,
+    "imageUrl": "",
+    "size": 54,
+    "x": 14,
+    "y": 18,
+    "circular": true,
+    "borderEnabled": true,
+    "borderColor": "#ffffff",
+    "borderWidth": 2,
+    "zoom": 100
+  },
+  "pageName": {
+    "enabled": true,
+    "text": "Minha Página",
+    "fontSize": 22,
+    "fontWeight": "bold",
+    "color": "#ffffff",
+    "x": 23,
+    "y": 18,
+    "align": "left",
+    "fontFamily": "'Outfit', sans-serif"
+  },
+  "badge": {
+    "enabled": true,
+    "size": 20,
+    "x": 52,
+    "y": 18
+  },
+  "headline": {
+    "enabled": true,
+    "text": "Título impactante para seu vídeo",
+    "fontSize": 26,
+    "fontWeight": "bold",
+    "color": "#ffffff",
+    "x": 50,
+    "y": 24,
+    "align": "center",
+    "maxWidth": 88,
+    "fontFamily": "'Outfit', sans-serif"
+  },
+  "subHeadline": {
+    "enabled": true,
+    "text": "Subtítulo explicativo com detalhes essenciais",
+    "fontSize": 17,
+    "fontWeight": "normal",
+    "color": "#e2e8f0",
+    "x": 50,
+    "y": 29,
+    "align": "center",
+    "maxWidth": 84,
+    "fontFamily": "'Outfit', sans-serif"
+  },
+  "watermark": {
+    "enabled": true,
+    "type": "text",
+    "text": "@minhapagina",
+    "imageUrl": "",
+    "fontSize": 16,
+    "x": 50,
+    "y": 81,
+    "opacity": 65,
+    "fontFamily": "'Outfit', sans-serif"
+  },
+  "fileName": "template_padrao_reels___shorts_(9_16).json"
+}

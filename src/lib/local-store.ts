@@ -55,7 +55,11 @@ export const STORAGE_KEYS = {
   pages: "pages",
   competitors: "competitors",
   followerHistory: "follower-history",
+  competitorPosts: "competitor-posts",
   templates: "templates",
   editorPrefs: "editor-prefs",
+  imageFlashTemplate: "image-flash-template",
+  imageFlashPrefs: "image-flash-prefs",
+  metaApiConfig: "meta-api-config",
   appSettings: "app-settings",
 } as const;

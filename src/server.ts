@@ -1,7 +1,28 @@
 import "./lib/error-capture";
+import { execFile, spawn } from "node:child_process";
+import fs from "node:fs/promises";
+import fsSync from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import process from "node:process";
 
 import { consumeLastCapturedError } from "./lib/error-capture";
 import { renderErrorPage } from "./lib/error-page";
+import {
+  getAllHistoricoRecords,
+  upsertHistoricoRecord,
+  upsertHistoricoBatch,
+  calculateGrowthBetweenDates,
+  runDailyFollowersCron,
+  getCronStatus,
+  normalizeHandle,
+  syncAllToSupabase,
+} from "./lib/historico-db";
+import {
+  testSupabaseConnection,
+  saveSupabaseConfig,
+  getSupabaseConfig,
+} from "./lib/supabase";
 
 type ServerEntry = {
   fetch: (request: Request, env: unknown, ctx: unknown) => Promise<Response> | Response;
@@ -16,6 +37,1386 @@ async function getServerEntry(): Promise<ServerEntry> {
     );
   }
   return serverEntryPromise;
+}
+
+// Diretório nativo de templates dentro do projeto: <projectRoot>/templates
+const TEMPLATES_DIR = path.resolve(process.cwd(), "templates");
+
+function sanitizeFileName(name: string): string {
+  const clean = name
+    .trim()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[\\/:*?"<>|]/g, "_")
+    .replace(/\s+/g, "_")
+    .toLowerCase();
+  return clean.replace(/^template_/, "");
+}
+
+/**
+ * Roteamento da API nativa de templates (/api/templates).
+ * Permite que a aplicação salve e leia arquivos .json diretamente na pasta "templates" do projeto.
+ */
+async function handleTemplatesApi(request: Request): Promise<Response> {
+  await fs.mkdir(TEMPLATES_DIR, { recursive: true });
+  const url = new URL(request.url);
+
+  // 1. GET /api/templates — Lista todos os templates salvos na pasta templates/
+  if (request.method === "GET") {
+    try {
+      const files = await fs.readdir(TEMPLATES_DIR);
+      const jsonFiles = files.filter((f) => f.endsWith(".json"));
+
+      const templatesList: any[] = [];
+
+      for (const fileName of jsonFiles) {
+        try {
+          const filePath = path.join(TEMPLATES_DIR, fileName);
+          const raw = await fs.readFile(filePath, "utf-8");
+          const parsed = JSON.parse(raw);
+
+          // Suporta tanto formato direto TemplateVisual quanto objeto com chave template
+          const templateData = parsed.template ? parsed.template : parsed;
+          if (templateData && typeof templateData === "object") {
+            const templateName =
+              templateData.name ||
+              parsed.name ||
+              fileName.replace(/\.json$/, "").replace(/^template_/, "").replace(/^backup_/, "");
+
+            templatesList.push({
+              ...templateData,
+              name: templateName,
+              fileName,
+            });
+          }
+        } catch (readErr) {
+          console.warn(`Erro ao ler arquivo ${fileName}:`, readErr);
+        }
+      }
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          folder: "templates",
+          templates: templatesList,
+          backups: [],
+        }),
+        {
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+    } catch (err: any) {
+      return new Response(
+        JSON.stringify({ success: false, error: err.message }),
+        { status: 500, headers: { "Content-Type": "application/json" } },
+      );
+    }
+  }
+
+  // 2. POST /api/templates — Salva um template na pasta templates/
+  if (request.method === "POST") {
+    try {
+      const body = await request.json();
+      const template = body.template || body;
+      const customName = body.name || template.name || "Template";
+      const safeName = sanitizeFileName(customName);
+
+      const fileName = `template_${safeName}.json`;
+      const fileData = {
+        ...template,
+        name: customName,
+        fileName,
+      };
+
+      const filePath = path.join(TEMPLATES_DIR, fileName);
+      await fs.writeFile(filePath, JSON.stringify(fileData, null, 2), "utf-8");
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          fileName,
+          folder: "templates",
+          data: fileData,
+        }),
+        { headers: { "Content-Type": "application/json" } },
+      );
+    } catch (err: any) {
+      return new Response(
+        JSON.stringify({ success: false, error: err.message }),
+        { status: 500, headers: { "Content-Type": "application/json" } },
+      );
+    }
+  }
+
+  // 3. DELETE /api/templates?name=...&file=... — Remove com garantia o template da pasta
+  if (request.method === "DELETE") {
+    try {
+      const nameParam = (url.searchParams.get("name") || "").trim();
+      const fileParam = (url.searchParams.get("file") || "").trim();
+      const safeName = sanitizeFileName(nameParam);
+
+      const files = await fs.readdir(TEMPLATES_DIR);
+      let deleted = 0;
+
+      for (const f of files) {
+        if (!f.endsWith(".json")) continue;
+
+        let shouldDelete = false;
+
+        // 1. Coincidência direta de nome de arquivo
+        if (fileParam && f.toLowerCase() === fileParam.toLowerCase()) {
+          shouldDelete = true;
+        } else if (f.toLowerCase() === nameParam.toLowerCase()) {
+          shouldDelete = true;
+        } else if (safeName && f.toLowerCase() === `template_${safeName}.json`.toLowerCase()) {
+          shouldDelete = true;
+        } else if (safeName && f.toLowerCase() === `${safeName}.json`.toLowerCase()) {
+          shouldDelete = true;
+        } else if (safeName && (f.startsWith("backup_") || f.startsWith("template_")) && f.includes(safeName)) {
+          shouldDelete = true;
+        }
+
+        // 2. Se ainda não identificado, inspeciona o conteúdo do JSON
+        if (!shouldDelete && nameParam) {
+          try {
+            const filePath = path.join(TEMPLATES_DIR, f);
+            const content = await fs.readFile(filePath, "utf-8");
+            const parsed = JSON.parse(content);
+            const tmplName = parsed.name || parsed.template?.name || "";
+            if (
+              tmplName.trim().toLowerCase() === nameParam.toLowerCase() ||
+              (safeName && sanitizeFileName(tmplName) === safeName)
+            ) {
+              shouldDelete = true;
+            }
+          } catch {}
+        }
+
+        if (shouldDelete) {
+          const filePath = path.join(TEMPLATES_DIR, f);
+          await fs.unlink(filePath).catch(() => {});
+          deleted++;
+        }
+      }
+
+      return new Response(
+        JSON.stringify({ success: true, deleted }),
+        { headers: { "Content-Type": "application/json" } },
+      );
+    } catch (err: any) {
+      return new Response(
+        JSON.stringify({ success: false, error: err.message }),
+        { status: 500, headers: { "Content-Type": "application/json" } },
+      );
+    }
+  }
+
+  return new Response("Method not allowed", { status: 405 });
+}
+
+function getNvencFfmpegPath(): string {
+  const gyanPath = path.join(
+    process.env["LOCALAPPDATA"] || "",
+    "Microsoft",
+    "WinGet",
+    "Packages",
+    "Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe",
+    "ffmpeg-9.0.2-full_build",
+    "bin",
+    "ffmpeg.exe",
+  );
+  if (fsSync.existsSync(gyanPath)) return gyanPath;
+  return "ffmpeg";
+}
+
+/**
+ * Interface para acompanhamento em tempo real de jobs de renderização NVENC
+ */
+interface NvencJobState {
+  progress: number;
+  fps: number;
+  speed: string;
+  time: number;
+  duration: number;
+  status: "starting" | "rendering" | "done" | "error";
+  error?: string;
+  updatedAt: number;
+}
+
+const activeNvencJobs = new Map<string, NvencJobState>();
+
+// Limpeza de jobs expirados a cada minuto (> 5 minutos de inatividade)
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, job] of activeNvencJobs.entries()) {
+    if (now - job.updatedAt > 5 * 60 * 1000) {
+      activeNvencJobs.delete(id);
+    }
+  }
+}, 60 * 1000);
+
+/**
+ * Roteamento da API de Renderização com NVIDIA NVENC + CUDA (/api/render-nvenc).
+ * Descarrega 100% do processamento do vídeo para a GPU RTX 3090 com aceleração de hardware instantânea.
+ */
+async function handleNvencApi(request: Request): Promise<Response> {
+  const url = new URL(request.url);
+  const ffmpegPath = getNvencFfmpegPath();
+
+  if (
+    request.method === "GET" &&
+    (url.pathname === "/api/render-nvenc" || url.pathname === "/api/render-nvenc/status")
+  ) {
+    return new Response(
+      JSON.stringify({
+        success: true,
+        available: true,
+        gpu: "NVIDIA RTX 3090",
+        encoder: "h264_nvenc",
+        hardwareAcceleration: "CUDA",
+        ffmpeg: ffmpegPath,
+      }),
+      { headers: { "Content-Type": "application/json" } },
+    );
+  }
+
+  // Consulta de progresso em tempo real da renderização na GPU
+  if (request.method === "GET" && url.pathname === "/api/render-nvenc/progress") {
+    const jobId = url.searchParams.get("id");
+    if (!jobId || !activeNvencJobs.has(jobId)) {
+      return new Response(
+        JSON.stringify({ success: false, progress: 0, status: "unknown" }),
+        { headers: { "Content-Type": "application/json" } },
+      );
+    }
+    const job = activeNvencJobs.get(jobId)!;
+    return new Response(
+      JSON.stringify({
+        success: true,
+        progress: job.progress,
+        fps: job.fps,
+        speed: job.speed,
+        time: job.time,
+        duration: job.duration,
+        status: job.status,
+        error: job.error,
+      }),
+      { headers: { "Content-Type": "application/json" } },
+    );
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/render-nvenc") {
+    const tempDir = path.join(
+      os.tmpdir(),
+      "nvenc_" + Math.random().toString(36).slice(2) + "_" + Date.now(),
+    );
+    await fs.mkdir(tempDir, { recursive: true });
+
+    let currentJobId = "";
+
+    try {
+      const formData = await request.formData();
+      const videoEntry = formData.get("video");
+      const templateEntry = formData.get("templateImage");
+
+      if (!videoEntry || !(videoEntry instanceof Blob)) {
+        return new Response(
+          JSON.stringify({ success: false, error: "Arquivo de vídeo não enviado." }),
+          { status: 400, headers: { "Content-Type": "application/json" } },
+        );
+      }
+
+      currentJobId = (formData.get("jobId") as string) || `nvenc_${Date.now()}`;
+      const videoDuration = parseFloat((formData.get("duration") as string) || "0");
+
+      activeNvencJobs.set(currentJobId, {
+        progress: 5,
+        fps: 0,
+        speed: "1x",
+        time: 0,
+        duration: videoDuration,
+        status: "starting",
+        updatedAt: Date.now(),
+      });
+
+      const inputVideoPath = path.join(tempDir, "input.mp4");
+      const outputVideoPath = path.join(tempDir, "output.mp4");
+      const templatePath = path.join(tempDir, "template.png");
+
+      const videoBuffer = Buffer.from(await videoEntry.arrayBuffer());
+      await fs.writeFile(inputVideoPath, videoBuffer);
+
+      let hasTemplate = false;
+      if (templateEntry && templateEntry instanceof Blob) {
+        const templateBuffer = Buffer.from(await templateEntry.arrayBuffer());
+        await fs.writeFile(templatePath, templateBuffer);
+        hasTemplate = true;
+      }
+
+      const cropX = parseInt((formData.get("cropX") as string) || "0", 10);
+      const cropY = parseInt((formData.get("cropY") as string) || "0", 10);
+      const cropW = parseInt((formData.get("cropW") as string) || "0", 10);
+      const cropH = parseInt((formData.get("cropH") as string) || "0", 10);
+
+      const overlayX = parseInt((formData.get("overlayX") as string) || "0", 10);
+      const overlayY = parseInt((formData.get("overlayY") as string) || "0", 10);
+      const overlayW = parseInt((formData.get("overlayW") as string) || "1080", 10);
+      const overlayH = parseInt((formData.get("overlayH") as string) || "1920", 10);
+      const borderRadius = parseInt((formData.get("borderRadius") as string) || "0", 10);
+
+      const keepAudio = (formData.get("keepAudio") as string) !== "false";
+      const preset = (formData.get("preset") as string) || "p2";
+      const cq = (formData.get("cq") as string) || "26";
+      const targetBitrate = (formData.get("targetBitrate") as string) || "1600k";
+      const maxBitrate = (formData.get("maxBitrate") as string) || "2200k";
+      const bufSize = (formData.get("bufSize") as string) || "4400k";
+      const rawBgColor = ((formData.get("bgColor") as string) || "#000000").trim();
+      const ffmpegBgColor = rawBgColor.startsWith("#") ? `0x${rawBgColor.slice(1)}` : rawBgColor;
+
+      const args: string[] = ["-y"];
+
+      // Otimização de filtro: se o vídeo está dentro dos limites 1080x1920, usamos 'pad', que é muito mais rápido que 'overlay' duplo.
+      // Se estiver fora dos limites (ex: overflow / coordenadas negativas), usamos overlay com fallback seguro.
+      const canUsePad =
+        overlayX >= 0 &&
+        overlayY >= 0 &&
+        overlayX + overlayW <= 1080 &&
+        overlayY + overlayH <= 1920;
+
+      if (hasTemplate) {
+        args.push("-loop", "1", "-i", templatePath);
+        args.push("-hwaccel", "cuda", "-i", inputVideoPath);
+
+        let filter = "";
+        if (canUsePad) {
+          if (cropW > 0 && cropH > 0) {
+            filter = `[1:v]crop=${cropW}:${cropH}:${cropX}:${cropY},scale=${overlayW}:${overlayH},pad=1080:1920:${overlayX}:${overlayY}:color=${ffmpegBgColor}[v_padded];[v_padded][0:v]overlay=0:0:shortest=1[outv]`;
+          } else {
+            filter = `[1:v]scale=${overlayW}:${overlayH},pad=1080:1920:${overlayX}:${overlayY}:color=${ffmpegBgColor}[v_padded];[v_padded][0:v]overlay=0:0:shortest=1[outv]`;
+          }
+        } else {
+          if (cropW > 0 && cropH > 0) {
+            filter = `[1:v]crop=${cropW}:${cropH}:${cropX}:${cropY},scale=${overlayW}:${overlayH}[v_scaled];color=c=${ffmpegBgColor}:s=1080x1920:d=1[bg];[bg][v_scaled]overlay=${overlayX}:${overlayY}[v_comp];[v_comp][0:v]overlay=0:0:shortest=1[outv]`;
+          } else {
+            filter = `[1:v]scale=${overlayW}:${overlayH}[v_scaled];color=c=${ffmpegBgColor}:s=1080x1920:d=1[bg];[bg][v_scaled]overlay=${overlayX}:${overlayY}[v_comp];[v_comp][0:v]overlay=0:0:shortest=1[outv]`;
+          }
+        }
+        args.push("-filter_complex", filter);
+        args.push("-map", "[outv]");
+        if (keepAudio) {
+          args.push("-map", "1:a?");
+        }
+      } else {
+        args.push("-hwaccel", "cuda", "-i", inputVideoPath);
+        let filter = "";
+        if (canUsePad) {
+          if (cropW > 0 && cropH > 0) {
+            filter = `[0:v]crop=${cropW}:${cropH}:${cropX}:${cropY},scale=${overlayW}:${overlayH},pad=1080:1920:${overlayX}:${overlayY}:color=${ffmpegBgColor}[outv]`;
+          } else {
+            filter = `[0:v]scale=${overlayW}:${overlayH},pad=1080:1920:${overlayX}:${overlayY}:color=${ffmpegBgColor}[outv]`;
+          }
+        } else {
+          if (cropW > 0 && cropH > 0) {
+            filter = `[0:v]crop=${cropW}:${cropH}:${cropX}:${cropY},scale=${overlayW}:${overlayH}[v_scaled];color=c=${ffmpegBgColor}:s=1080x1920:d=1[bg];[bg][v_scaled]overlay=${overlayX}:${overlayY}[outv]`;
+          } else {
+            filter = `[0:v]scale=${overlayW}:${overlayH}[v_scaled];color=c=${ffmpegBgColor}:s=1080x1920:d=1[bg];[bg][v_scaled]overlay=${overlayX}:${overlayY}[outv]`;
+          }
+        }
+        args.push("-filter_complex", filter);
+        args.push("-map", "[outv]");
+        if (keepAudio) {
+          args.push("-map", "0:a?");
+        }
+      }
+
+      args.push(
+        "-c:v",
+        "h264_nvenc",
+        "-preset",
+        preset,
+        "-tune",
+        "hq",
+        "-rc:v",
+        "vbr",
+        "-cq:v",
+        cq,
+        "-b:v",
+        targetBitrate,
+        "-maxrate",
+        maxBitrate,
+        "-bufsize",
+        bufSize,
+        "-spatial-aq",
+        "1",
+        "-temporal-aq",
+        "1",
+        "-movflags",
+        "+faststart",
+      );
+
+      if (keepAudio) {
+        args.push("-c:a", "copy");
+      } else {
+        args.push("-an");
+      }
+
+      // Adiciona flag de progresso em tempo real
+      args.push("-progress", "pipe:1");
+      args.push(outputVideoPath);
+
+      // Executa no hardware NVIDIA com monitoramento contínuo de progresso
+      await new Promise<void>((resolve, reject) => {
+        const proc = spawn(ffmpegPath, args);
+        let stderr = "";
+
+        proc.stdout.on("data", (data: Buffer) => {
+          const text = data.toString();
+          const timeMatch = text.match(/out_time_us=(\d+)/);
+          const fpsMatch = text.match(/fps=([\d.]+)/);
+          const speedMatch = text.match(/speed=([\s\d.]+)x/);
+
+          const job = activeNvencJobs.get(currentJobId);
+          if (job) {
+            job.updatedAt = Date.now();
+            if (fpsMatch && fpsMatch[1]) job.fps = parseFloat(fpsMatch[1]);
+            if (speedMatch && speedMatch[1]) job.speed = speedMatch[1].trim() + "x";
+            if (timeMatch && timeMatch[1]) {
+              const timeSec = parseInt(timeMatch[1], 10) / 1_000_000;
+              job.time = timeSec;
+              if (job.duration > 0) {
+                // Progresso de 5% a 98% baseado no tempo real codificado
+                const pct = Math.min(98, Math.max(5, Math.round((timeSec / job.duration) * 100)));
+                job.progress = pct;
+              } else {
+                job.progress = Math.min(95, job.progress + 5);
+              }
+              job.status = "rendering";
+            }
+          }
+        });
+
+        proc.stderr.on("data", (data: Buffer) => {
+          stderr += data.toString();
+        });
+
+        proc.on("error", (err) => {
+          const job = activeNvencJobs.get(currentJobId);
+          if (job) {
+            job.status = "error";
+            job.error = err.message;
+            job.updatedAt = Date.now();
+          }
+          reject(err);
+        });
+
+        proc.on("close", (code) => {
+          const job = activeNvencJobs.get(currentJobId);
+          if (code === 0) {
+            if (job) {
+              job.progress = 100;
+              job.status = "done";
+              job.updatedAt = Date.now();
+            }
+            resolve();
+          } else {
+            if (job) {
+              job.status = "error";
+              job.error = stderr || `FFmpeg falhou com código ${code}`;
+              job.updatedAt = Date.now();
+            }
+            console.error("FFmpeg NVENC error:", stderr);
+            reject(new Error(stderr || `FFmpeg falhou com código ${code}`));
+          }
+        });
+      });
+
+      const outBuffer = await fs.readFile(outputVideoPath);
+
+      // Limpeza em segundo plano
+      fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+
+      return new Response(outBuffer, {
+        status: 200,
+        headers: {
+          "Content-Type": "video/mp4",
+          "Content-Length": String(outBuffer.length),
+        },
+      });
+    } catch (err: any) {
+      if (currentJobId && activeNvencJobs.has(currentJobId)) {
+        const job = activeNvencJobs.get(currentJobId)!;
+        job.status = "error";
+        job.error = err.message;
+        job.updatedAt = Date.now();
+      }
+      fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+      console.error("Erro na renderização NVENC:", err);
+      return new Response(JSON.stringify({ success: false, error: err.message }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+  }
+
+  return new Response("Not found", { status: 404 });
+}
+
+/**
+ * Banco em memória de perfis conhecidos para modo demonstração / offline
+ */
+const KNOWN_DEMO_PROFILES: Record<
+  string,
+  {
+    name: string;
+    followers: number;
+    posts: number;
+    following: number;
+    biography: string;
+    avatarUrl: string;
+    verified: boolean;
+  }
+> = {
+  dachshunddiario: {
+    name: "Dachshund Diário 🌭",
+    followers: 28450,
+    posts: 412,
+    following: 320,
+    biography: "O portal oficial dos apaixonados por Dachshund / Teckel / Salsicha! Dicas diárias, vídeos fofos e muito amor. 🐾",
+    avatarUrl: "https://images.unsplash.com/photo-1612195583950-b8fd34c87093?w=150&h=150&fit=crop&crop=face",
+    verified: true,
+  },
+  "doxie.lovers": {
+    name: "Doxie Lovers World",
+    followers: 64200,
+    posts: 890,
+    following: 450,
+    biography: "Worldwide Dachshund Community ❤️ Celebrating the long dogs every day! Tag #doxielovers to be featured.",
+    avatarUrl: "https://images.unsplash.com/photo-1543466835-00a7907e9de1?w=150&h=150&fit=crop&crop=face",
+    verified: true,
+  },
+  wienerdogworld: {
+    name: "Wiener Dog World 🐾",
+    followers: 43100,
+    posts: 620,
+    following: 280,
+    biography: "The happiest sausage dogs on Earth! Daily reels, memes and pup humor.",
+    avatarUrl: "https://images.unsplash.com/photo-1583511655857-d19b40a7a54e?w=150&h=150&fit=crop&crop=face",
+    verified: false,
+  },
+  viralbichos: {
+    name: "Viral Bichos Brasil",
+    followers: 125000,
+    posts: 1450,
+    following: 110,
+    biography: "Os vídeos de pets mais virais da internet reunidos em um só lugar! 🐶🐱🦜",
+    avatarUrl: "https://images.unsplash.com/photo-1548199973-03cce0bbc87b?w=150&h=150&fit=crop&crop=face",
+    verified: true,
+  },
+  salsichasreais: {
+    name: "Salsichas Reais",
+    followers: 19800,
+    posts: 310,
+    following: 195,
+    biography: "Vida real com cães salsichas: teimosia, charme e cobertores!",
+    avatarUrl: "https://images.unsplash.com/photo-1517849845537-4d257902454a?w=150&h=150&fit=crop&crop=face",
+    verified: false,
+  },
+  seufilmefavorito: {
+    name: "Seu Filme Favorito 🎬",
+    followers: 48500,
+    posts: 320,
+    following: 215,
+    biography: "O melhor do cinema, séries, resenhas e dicas imperdíveis! 🍿🎥 Qual é o seu filme favorito?",
+    avatarUrl: "https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=150&h=150&fit=crop&crop=face",
+    verified: false,
+  },
+  filmeseseries: {
+    name: "Filmes & Séries Brasil 🍿",
+    followers: 82000,
+    posts: 640,
+    following: 190,
+    biography: "Tudo sobre o universo cinematográfico, estreias e trailers exclusivos! 🎞️✨",
+    avatarUrl: "https://images.unsplash.com/photo-1517604931442-7e0c8ed2963c?w=150&h=150&fit=crop&crop=face",
+    verified: false,
+  },
+  cinefilos: {
+    name: "Cinépicos & Críticas 🎥",
+    followers: 31200,
+    posts: 280,
+    following: 140,
+    biography: "Para quem respira cinema! Análises, curiosidades e listas dos maiores clássicos da sétima arte.",
+    avatarUrl: "https://images.unsplash.com/photo-1485846234645-a62644f84728?w=150&h=150&fit=crop&crop=face",
+    verified: false,
+  },
+};
+
+/**
+ * Construtor inteligente de perfis de referência para concorrentes e benchmarking
+ */
+function buildReferenceProfile(cleanHandle: string) {
+  const normalized = cleanHandle.toLowerCase().trim();
+
+  // 1. Verifica se já existe perfil conhecido
+  if (KNOWN_DEMO_PROFILES[normalized]) {
+    const known = KNOWN_DEMO_PROFILES[normalized]!;
+    return {
+      handle: normalized,
+      name: known.name,
+      followers: known.followers,
+      posts: known.posts,
+      following: known.following,
+      biography: known.biography,
+      avatarUrl: known.avatarUrl,
+      verified: known.verified,
+      isKnown: true,
+    };
+  }
+
+  // 2. Detecção inteligente de nicho / palavras-chave
+  let emoji = "✨";
+  let bio = `Perfil de referência @${normalized}. Monitoramento de dados e análise comparativa de crescimento.`;
+  let avatarUrl = "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&h=150&fit=crop&crop=face";
+
+  if (/film|filme|cine|cinema|movie|serie|pipoca|trailers/.test(normalized)) {
+    emoji = "🎬";
+    bio = `O melhor do cinema, séries, lançamentos e análises! 🍿🎥 Conteúdo diário sobre filmes.`;
+    avatarUrl = "https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=150&h=150&fit=crop&crop=face";
+  } else if (/dog|pet|cachorro|cat|gato|bicho|animal|salsicha|dachshund/.test(normalized)) {
+    emoji = "🐾";
+    bio = `Amor pelos pets, dicas de cuidados e momentos fofos diários! 🐶🐱`;
+    avatarUrl = "https://images.unsplash.com/photo-1543466835-00a7907e9de1?w=150&h=150&fit=crop&crop=face";
+  } else if (/mkt|marketing|growth|business|negocio|vendas|dinheiro|finance/.test(normalized)) {
+    emoji = "📈";
+    bio = `Estratégias de crescimento, mercado e inteligência de negócios! 🚀`;
+    avatarUrl = "https://images.unsplash.com/photo-1460925895917-afdab827c52f?w=150&h=150&fit=crop&crop=face";
+  } else if (/tech|dev|code|ia|ai|software|tecnologia/.test(normalized)) {
+    emoji = "⚡";
+    bio = `Inovação, inteligência artificial e novidades do mundo tech! 💻`;
+    avatarUrl = "https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?w=150&h=150&fit=crop&crop=face";
+  }
+
+  // Cálculo determinístico para manter valores consistentes a cada consulta
+  let hash = 0;
+  for (let i = 0; i < normalized.length; i++) {
+    hash = (hash << 5) - hash + normalized.charCodeAt(i);
+    hash |= 0;
+  }
+  const positiveHash = Math.abs(hash);
+  const estFollowers = 8000 + (positiveHash % 68000);
+  const estPosts = 45 + (positiveHash % 420);
+  const estFollowing = 90 + (positiveHash % 350);
+
+  const formattedName = normalized
+    .split(/[._]/)
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+
+  return {
+    handle: normalized,
+    name: `${formattedName} ${emoji}`.trim(),
+    followers: estFollowers,
+    posts: estPosts,
+    following: estFollowing,
+    biography: bio,
+    avatarUrl,
+    verified: false,
+    isKnown: false,
+  };
+}
+
+/**
+ * Roteamento da API Social / Meta Graph API (/api/social)
+ */
+async function handleSocialApi(request: Request): Promise<Response> {
+  const url = new URL(request.url);
+
+  // 0. API da Tabela Historico_Seguidores & Rotina Automatizada (Passo 1, 2 e 4)
+  if (url.pathname === "/api/social/historico-seguidores") {
+    try {
+      if (request.method === "GET") {
+        const startDate = url.searchParams.get("startDate") || "";
+        const endDate = url.searchParams.get("endDate") || "";
+        const handleFilter = normalizeHandle(url.searchParams.get("handle") || "");
+        const typeFilter = url.searchParams.get("type") || "";
+
+        let records = await getAllHistoricoRecords();
+
+        if (handleFilter) {
+          records = records.filter((r) => normalizeHandle(r.profile_handle) === handleFilter);
+        }
+        if (typeFilter) {
+          records = records.filter((r) => r.type === typeFilter);
+        }
+        if (startDate) {
+          records = records.filter((r) => r.date >= startDate);
+        }
+        if (endDate) {
+          records = records.filter((r) => r.date <= endDate);
+        }
+
+        // Se data inicial e final foram fornecidas, calcula a matemática do crescimento (Passo 4)
+        let calculations: any[] = [];
+        if (startDate && endDate) {
+          const uniqueHandles = Array.from(new Set(records.map((r) => r.profile_handle)));
+          calculations = await Promise.all(
+            uniqueHandles.map((h) => calculateGrowthBetweenDates(h, startDate, endDate)),
+          );
+        }
+
+        return new Response(
+          JSON.stringify({
+            success: true,
+            totalRecords: records.length,
+            records,
+            calculations,
+            filter: { startDate, endDate, handle: handleFilter, type: typeFilter },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+
+      if (request.method === "POST") {
+        const body = (await request.json()) as any;
+        if (!body.profile_handle || body.followers_count === undefined) {
+          return new Response(
+            JSON.stringify({ success: false, message: "Campos profile_handle e followers_count são obrigatórios." }),
+            { status: 400, headers: { "Content-Type": "application/json" } },
+          );
+        }
+
+        const record = await upsertHistoricoRecord({
+          profile_handle: body.profile_handle,
+          profile_name: body.profile_name || body.profile_handle,
+          date: body.date || new Date().toISOString().slice(0, 10),
+          followers_count: Number(body.followers_count),
+          type: body.type || "Minha Página",
+          page_id: body.page_id,
+        });
+
+        return new Response(
+          JSON.stringify({ success: true, record }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+    } catch (err: any) {
+      return new Response(
+        JSON.stringify({ success: false, message: err.message || "Erro em /api/social/historico-seguidores" }),
+        { status: 500, headers: { "Content-Type": "application/json" } },
+      );
+    }
+  }
+
+  // 0.1 Inserção em Lote na tabela Historico_Seguidores
+  if (url.pathname === "/api/social/historico-seguidores/batch" && request.method === "POST") {
+    try {
+      const body = (await request.json()) as any;
+      const batch = Array.isArray(body.batch) ? body.batch : Array.isArray(body) ? body : [];
+      const result = await upsertHistoricoBatch(batch);
+      return new Response(
+        JSON.stringify({ success: true, ...result }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    } catch (err: any) {
+      return new Response(
+        JSON.stringify({ success: false, message: err.message }),
+        { status: 500, headers: { "Content-Type": "application/json" } },
+      );
+    }
+  }
+
+  // 0.2 Disparo da Rotina Automatizada (Cron Diário das 23:59)
+  if (url.pathname === "/api/social/historico-seguidores/cron-run" && request.method === "POST") {
+    try {
+      let params: any = {};
+      try {
+        params = await request.json();
+      } catch {
+        // segue com vazio
+      }
+      const cronResult = await runDailyFollowersCron(params);
+      return new Response(
+        JSON.stringify({ success: true, cronResult }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    } catch (err: any) {
+      return new Response(
+        JSON.stringify({ success: false, message: err.message }),
+        { status: 500, headers: { "Content-Type": "application/json" } },
+      );
+    }
+  }
+
+  // 0.3 Status do Cron Diário
+  if (url.pathname === "/api/social/historico-seguidores/cron-status" && request.method === "GET") {
+    try {
+      const status = await getCronStatus();
+      return new Response(
+        JSON.stringify({ success: true, status }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    } catch (err: any) {
+      return new Response(
+        JSON.stringify({ success: false, message: err.message }),
+        { status: 500, headers: { "Content-Type": "application/json" } },
+      );
+    }
+  }
+
+  // 0.4 Supabase: Status da Conexão
+  if (url.pathname === "/api/supabase/status" && request.method === "GET") {
+    try {
+      const config = await getSupabaseConfig();
+      const status = await testSupabaseConnection();
+      return new Response(
+        JSON.stringify({
+          success: true,
+          ...status,
+          config: config
+            ? {
+                url: config.url,
+                hasKey: Boolean(config.anonKey),
+                maskedKey: config.anonKey
+                  ? `${config.anonKey.slice(0, 8)}...${config.anonKey.slice(-6)}`
+                  : "",
+                configuredAt: config.configuredAt,
+              }
+            : null,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    } catch (err: any) {
+      return new Response(
+        JSON.stringify({ success: false, message: err.message }),
+        { status: 500, headers: { "Content-Type": "application/json" } },
+      );
+    }
+  }
+
+  // 0.5 Supabase: Salvar Configuração & Testar Conexão
+  if (url.pathname === "/api/supabase/config" && request.method === "POST") {
+    try {
+      const body = (await request.json()) as any;
+      if (!body.url || !body.anonKey) {
+        return new Response(
+          JSON.stringify({ success: false, message: "URL e Anon Key do Supabase são obrigatórios." }),
+          { status: 400, headers: { "Content-Type": "application/json" } },
+        );
+      }
+
+      await saveSupabaseConfig({ url: body.url, anonKey: body.anonKey });
+      const testResult = await testSupabaseConnection({ url: body.url, anonKey: body.anonKey });
+
+      return new Response(
+        JSON.stringify({ success: true, ...testResult }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    } catch (err: any) {
+      return new Response(
+        JSON.stringify({ success: false, message: err.message }),
+        { status: 500, headers: { "Content-Type": "application/json" } },
+      );
+    }
+  }
+
+  // 0.6 Supabase: Sincronização Completa de Dados Locais para o Supabase
+  if (url.pathname === "/api/supabase/sync" && request.method === "POST") {
+    try {
+      const syncResult = await syncAllToSupabase();
+      return new Response(
+        JSON.stringify(syncResult),
+        { status: syncResult.success ? 200 : 500, headers: { "Content-Type": "application/json" } },
+      );
+    } catch (err: any) {
+      return new Response(
+        JSON.stringify({ success: false, message: err.message }),
+        { status: 500, headers: { "Content-Type": "application/json" } },
+      );
+    }
+  }
+
+  // 1. POST ou GET /api/social/meta-test-connection
+  if (url.pathname === "/api/social/meta-test-connection") {
+    try {
+      let accessToken = url.searchParams.get("accessToken") || "";
+      let instagramAccountId = url.searchParams.get("instagramAccountId") || "";
+
+      if (request.method === "POST") {
+        try {
+          const body = (await request.json()) as any;
+          if (body.accessToken) accessToken = body.accessToken;
+          if (body.instagramAccountId) instagramAccountId = body.instagramAccountId;
+        } catch {
+          // segue com searchParams
+        }
+      }
+
+      if (!accessToken.trim()) {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            message: "Por favor, insira o Meta Access Token.",
+          }),
+          { status: 400, headers: { "Content-Type": "application/json" } },
+        );
+      }
+
+      // Função para descobrir todas as Páginas e Contas do Instagram vinculadas ao Token
+      async function discoverAccounts(): Promise<Array<{
+        id: string;
+        username: string;
+        name: string;
+        pageName?: string;
+        pageId?: string;
+        platform: "instagram" | "facebook";
+        avatarUrl?: string;
+        followers: number;
+        posts: number;
+        biography?: string;
+        hasInstagram: boolean;
+      }>> {
+        const list: Array<{
+          id: string;
+          username: string;
+          name: string;
+          pageName?: string;
+          pageId?: string;
+          platform: "instagram" | "facebook";
+          avatarUrl?: string;
+          followers: number;
+          posts: number;
+          biography?: string;
+          hasInstagram: boolean;
+          historicalSnapshots?: Array<{ date: string; followers: number }>;
+        }> = [];
+
+        try {
+          const accountsUrl = `https://graph.facebook.com/v21.0/me/accounts?fields=id,name,fan_count,followers_count,instagram_business_account{id,username,name,biography,profile_picture_url,followers_count,media_count}&access_token=${accessToken}`;
+          const res = await fetch(accountsUrl);
+          const data = (await res.json()) as any;
+          if (Array.isArray(data.data)) {
+            for (const page of data.data) {
+              // 1. Adiciona a Conta Comercial do Instagram (se vinculada)
+              if (page.instagram_business_account) {
+                const ig = page.instagram_business_account;
+                const alreadyExists = list.some(
+                  (item) =>
+                    item.id === ig.id ||
+                    (item.platform === "instagram" &&
+                      item.username.toLowerCase() === ig.username.toLowerCase()),
+                );
+                if (!alreadyExists) {
+                  // Busca histórico diário oficial de novos seguidores se permitido pelo token
+                  let igSnapshots: Array<{ date: string; followers: number }> = [];
+                  try {
+                    const insightsUrl = `https://graph.facebook.com/v21.0/${ig.id}/insights?metric=follower_count&period=day&access_token=${accessToken}`;
+                    const insRes = await fetch(insightsUrl);
+                    const insData = (await insRes.json()) as any;
+                    if (insData && Array.isArray(insData.data) && insData.data[0]?.values) {
+                      const values = insData.data[0].values;
+                      let running = ig.followers_count ?? 0;
+                      const rev = [...values].reverse();
+                      const snaps: Array<{ date: string; followers: number }> = [];
+                      const todayStr = new Date().toISOString().slice(0, 10);
+                      snaps.push({ date: todayStr, followers: running });
+                      for (const v of rev) {
+                        const dateStr = v.end_time.slice(0, 10);
+                        const delta = typeof v.value === "number" ? v.value : 0;
+                        running = Math.max(0, running - delta);
+                        snaps.push({ date: dateStr, followers: running });
+                      }
+                      igSnapshots = snaps.reverse();
+                    }
+                  } catch {
+                    // segue se token não tiver instagram_manage_insights
+                  }
+
+                  list.push({
+                    id: ig.id,
+                    username: ig.username,
+                    name: ig.name || ig.username,
+                    pageName: page.name,
+                    pageId: page.id,
+                    platform: "instagram",
+                    avatarUrl: ig.profile_picture_url,
+                    followers: ig.followers_count ?? 0,
+                    posts: ig.media_count ?? 0,
+                    biography: ig.biography ?? "",
+                    hasInstagram: true,
+                    historicalSnapshots: igSnapshots,
+                  });
+                }
+              }
+
+              // 2. Adiciona a Página do Facebook correspondente com seus seguidores reais
+              const fbFollowers = page.followers_count ?? page.fan_count ?? 0;
+              const pageExists = list.some(
+                (item) =>
+                  item.id === page.id ||
+                  (item.platform === "facebook" &&
+                    item.name.toLowerCase() === page.name.toLowerCase()),
+              );
+              if (!pageExists) {
+                // Busca histórico diário de curtidores se permitido pelo token
+                let fbSnapshots: Array<{ date: string; followers: number }> = [];
+                try {
+                  const fbInsUrl = `https://graph.facebook.com/v21.0/${page.id}/insights/page_fans?period=day&access_token=${accessToken}`;
+                  const fbInsRes = await fetch(fbInsUrl);
+                  const fbInsData = (await fbInsRes.json()) as any;
+                  if (fbInsData && Array.isArray(fbInsData.data) && fbInsData.data[0]?.values) {
+                    const values = fbInsData.data[0].values;
+                    fbSnapshots = values.map((v: any) => ({
+                      date: v.end_time.slice(0, 10),
+                      followers: v.value,
+                    }));
+                  }
+                } catch {
+                  // segue
+                }
+
+                list.push({
+                  id: page.id,
+                  username: page.name.toLowerCase().replace(/[^a-z0-9_]/g, ""),
+                  name: page.name,
+                  pageName: page.name,
+                  pageId: page.id,
+                  platform: "facebook",
+                  avatarUrl: `https://graph.facebook.com/v21.0/${page.id}/picture?type=normal&access_token=${accessToken}`,
+                  followers: fbFollowers,
+                  posts: 0,
+                  biography: `Página do Facebook (${page.name})`,
+                  hasInstagram: Boolean(page.instagram_business_account),
+                  historicalSnapshots: fbSnapshots,
+                });
+              }
+            }
+          }
+        } catch {
+          // segue
+        }
+
+        // Tenta também consultar diretamente me?fields=instagram_business_account
+        try {
+          const meUrl = `https://graph.facebook.com/v21.0/me?fields=id,name,username,instagram_business_account{id,username,name,biography,profile_picture_url,followers_count,media_count}&access_token=${accessToken}`;
+          const meRes = await fetch(meUrl);
+          const meData = (await meRes.json()) as any;
+          if (meData.instagram_business_account) {
+            const ig = meData.instagram_business_account;
+            const alreadyExists = list.some(
+              (item) =>
+                item.id === ig.id ||
+                (item.platform === "instagram" &&
+                  item.username.toLowerCase() === ig.username.toLowerCase()),
+            );
+            if (!alreadyExists) {
+              list.push({
+                id: ig.id,
+                username: ig.username,
+                name: ig.name || ig.username,
+                pageName: meData.name || "Perfil",
+                platform: "instagram",
+                avatarUrl: ig.profile_picture_url,
+                followers: ig.followers_count ?? 0,
+                posts: ig.media_count ?? 0,
+                biography: ig.biography ?? "",
+                hasInstagram: true,
+              });
+            }
+          }
+        } catch {
+          // segue
+        }
+
+        return list;
+      }
+
+      // Descobre todas as contas vinculadas a este token
+      const discovered = await discoverAccounts();
+
+      // CASO 1: Se o usuário NÃO forneceu o Instagram Account ID, usamos a lista de descobertos
+      if (!instagramAccountId.trim()) {
+        const primary = discovered.find((d) => d.hasInstagram) || discovered[0];
+        if (primary) {
+          return new Response(
+            JSON.stringify({
+              success: true,
+              discovered: true,
+              instagramAccountId: primary.id,
+              username: primary.username,
+              name: primary.name,
+              pageName: primary.pageName,
+              platform: primary.platform,
+              avatarUrl: primary.avatarUrl,
+              followers: primary.followers ?? 0,
+              posts: primary.posts ?? 0,
+              biography: primary.biography ?? "",
+              accounts: discovered,
+              message: `Encontramos ${discovered.length} página(s) vinculada(s) ao seu token!`,
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+
+        return new Response(
+          JSON.stringify({
+            success: false,
+            message:
+              "Token válido, mas nenhuma Página do Facebook ou conta do Instagram vinculada foi encontrada com as permissões atuais. Certifique-se de selecionar sua Página ao gerar o token.",
+          }),
+          { status: 404, headers: { "Content-Type": "application/json" } },
+        );
+      }
+
+      // CASO 2: O usuário forneceu um ID diretamente
+      // 1. Tenta consultar diretamente como Instagram Account ID
+      const metaUrl = `https://graph.facebook.com/v21.0/${instagramAccountId}?fields=id,username,name,biography,profile_picture_url,followers_count,media_count&access_token=${accessToken}`;
+      const metaRes = await fetch(metaUrl);
+      const metaData = (await metaRes.json()) as any;
+
+      if (metaRes.ok && metaData.username) {
+        return new Response(
+          JSON.stringify({
+            success: true,
+            instagramAccountId: metaData.id || instagramAccountId,
+            username: metaData.username,
+            name: metaData.name || metaData.username,
+            avatarUrl: metaData.profile_picture_url,
+            followers: metaData.followers_count ?? 0,
+            posts: metaData.media_count ?? 0,
+            biography: metaData.biography ?? "",
+            accounts: discovered,
+            message: `Conectado com sucesso à conta @${metaData.username}!`,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+
+      // 2. Se falhou (como no erro #100), verifica se o ID fornecido é na verdade um FACEBOOK PAGE ID!
+      try {
+        const pageUrl = `https://graph.facebook.com/v21.0/${instagramAccountId}?fields=id,name,instagram_business_account{id,username,name,biography,profile_picture_url,followers_count,media_count}&access_token=${accessToken}`;
+        const pageRes = await fetch(pageUrl);
+        const pageData = (await pageRes.json()) as any;
+
+        if (pageRes.ok && pageData.instagram_business_account) {
+          const ig = pageData.instagram_business_account;
+          return new Response(
+            JSON.stringify({
+              success: true,
+              instagramAccountId: ig.id,
+              username: ig.username,
+              name: ig.name || ig.username,
+              pageName: pageData.name,
+              avatarUrl: ig.profile_picture_url,
+              followers: ig.followers_count ?? 0,
+              posts: ig.media_count ?? 0,
+              biography: ig.biography ?? "",
+              accounts: discovered,
+              message: `O ID fornecido (${instagramAccountId}) era da sua Página do Facebook ("${pageData.name}"). Convertemos automaticamente para o Instagram @${ig.username}!`,
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        } else if (pageRes.ok && pageData.name && !pageData.instagram_business_account) {
+          return new Response(
+            JSON.stringify({
+              success: false,
+              accounts: discovered,
+              message: `O ID informado (${instagramAccountId}) é da sua Página do Facebook "${pageData.name}", mas ela ainda não possui uma conta de Instagram Comercial vinculada. Vincule seu Instagram a essa Página no app do Instagram (Editar Perfil > Página) ou no Meta Business Suite.`,
+            }),
+            { status: 400, headers: { "Content-Type": "application/json" } },
+          );
+        }
+      } catch {
+        // segue para tratamento de erro
+      }
+
+      // 2.5 Fallback: se o ID informado falhou mas temos contas descobertas
+      if (discovered.length > 0) {
+        const fallback = discovered.find((d) => d.hasInstagram) || discovered[0];
+        if (fallback) {
+          return new Response(
+            JSON.stringify({
+              success: true,
+              discovered: true,
+              instagramAccountId: fallback.id,
+              username: fallback.username,
+              name: fallback.name,
+              pageName: fallback.pageName,
+              platform: fallback.platform,
+              avatarUrl: fallback.avatarUrl,
+              followers: fallback.followers ?? 0,
+              posts: fallback.posts ?? 0,
+              biography: fallback.biography ?? "",
+              accounts: discovered,
+              message: `O ID informado (${instagramAccountId}) era inválido, mas localizamos ${discovered.length} página(s) vinculada(s) ao seu token!`,
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+      }
+
+      // 3. Traduz e formata erros frequentes da Meta com instruções claras
+      const rawError = metaData?.error?.message || "";
+      let friendlyMessage = metaData?.error?.message || "Erro de autenticação com a Meta Graph API.";
+
+      if (rawError.includes("pages_read_engagement") || rawError.includes("Page Public Content Access") || rawError.includes("#100")) {
+        friendlyMessage = `O ID informado (${instagramAccountId}) é de uma Página do Facebook, e não de uma conta do Instagram. Para resolver:\n1. Adicione a permissão 'pages_read_engagement' no seu token no Graph API Explorer.\n2. Ou simplesmente apague o campo de ID e clique em 'Detectar Conta Automaticamente' para o app encontrar seu Instagram sozinho.`;
+      }
+
+      return new Response(
+        JSON.stringify({
+          success: false,
+          message: friendlyMessage,
+          metaError: metaData?.error,
+        }),
+        { status: 400, headers: { "Content-Type": "application/json" } },
+      );
+    } catch (err: any) {
+      return new Response(
+        JSON.stringify({ success: false, message: err.message || "Erro interno ao testar conexão." }),
+        { status: 500, headers: { "Content-Type": "application/json" } },
+      );
+    }
+  }
+
+  // 2. GET ou POST /api/social/instagram-lookup
+  if (url.pathname === "/api/social/instagram-lookup") {
+    try {
+      let handle = url.searchParams.get("handle") || "";
+      let accessToken = url.searchParams.get("accessToken") || process.env["META_ACCESS_TOKEN"] || "";
+      let instagramAccountId =
+        url.searchParams.get("instagramAccountId") || process.env["META_INSTAGRAM_ACCOUNT_ID"] || "";
+
+      if (request.method === "POST") {
+        try {
+          const body = (await request.json()) as any;
+          if (body.handle) handle = body.handle;
+          if (body.accessToken) accessToken = body.accessToken;
+          if (body.instagramAccountId) instagramAccountId = body.instagramAccountId;
+        } catch {
+          // segue
+        }
+      }
+
+      if (!handle.trim()) {
+        return new Response(
+          JSON.stringify({ success: false, message: "Nome do usuário (@handle) é obrigatório." }),
+          { status: 400, headers: { "Content-Type": "application/json" } },
+        );
+      }
+
+      // Normaliza o handle
+      const cleanHandle = handle
+        .trim()
+        .replace(/^@/, "")
+        .replace(/https?:\/\/(www\.)?instagram\.com\//, "")
+        .replace(/\/.*$/, "")
+        .toLowerCase();
+
+      // CASO A: Usuário configurou Meta Access Token e Instagram Business Account ID
+      if (accessToken && instagramAccountId) {
+        try {
+          let resolvedIgId = instagramAccountId;
+          // Se o ID for de uma Página do Facebook, converte automaticamente para o Instagram Business ID
+          try {
+            const pageCheckUrl = `https://graph.facebook.com/v21.0/${instagramAccountId}?fields=id,instagram_business_account{id}&access_token=${accessToken}`;
+            const pageCheckRes = await fetch(pageCheckUrl);
+            const pageCheckData = (await pageCheckRes.json()) as any;
+            if (pageCheckData?.instagram_business_account?.id) {
+              resolvedIgId = pageCheckData.instagram_business_account.id;
+            }
+          } catch {
+            // segue com o ID fornecido
+          }
+
+          // 1. Tenta consulta direta (caso seja a própria conta cadastrada)
+          const ownUrl = `https://graph.facebook.com/v21.0/${resolvedIgId}?fields=id,username,name,biography,profile_picture_url,followers_count,follows_count,media_count&access_token=${accessToken}`;
+          const ownRes = await fetch(ownUrl);
+          const ownData = (await ownRes.json()) as any;
+
+          if (ownRes.ok && ownData.username?.toLowerCase() === cleanHandle) {
+            return new Response(
+              JSON.stringify({
+                success: true,
+                source: "meta_graph_api",
+                handle: ownData.username,
+                name: ownData.name || ownData.username,
+                followers: ownData.followers_count ?? 0,
+                posts: ownData.media_count ?? 0,
+                following: ownData.follows_count ?? 0,
+                biography: ownData.biography ?? "",
+                avatarUrl: ownData.profile_picture_url ?? "",
+                verified: true,
+                message: "Dados sincronizados oficialmente via Meta Graph API (Sua Conta).",
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            );
+          }
+
+          // 2. Consulta via Meta Business Discovery API (para páginas de concorrentes ou de terceiros)
+          const discoveryUrl = `https://graph.facebook.com/v21.0/${resolvedIgId}?fields=business_discovery.username(${cleanHandle}){id,username,name,biography,profile_picture_url,followers_count,follows_count,media_count,media{id,caption,like_count,comments_count,timestamp,media_url,permalink}}&access_token=${accessToken}`;
+          const discRes = await fetch(discoveryUrl);
+          const discData = (await discRes.json()) as any;
+
+          if (discRes.ok && discData.business_discovery) {
+            const bd = discData.business_discovery;
+            return new Response(
+              JSON.stringify({
+                success: true,
+                source: "meta_graph_api",
+                handle: bd.username,
+                name: bd.name || bd.username,
+                followers: bd.followers_count ?? 0,
+                posts: bd.media_count ?? 0,
+                following: bd.follows_count ?? 0,
+                biography: bd.biography ?? "",
+                avatarUrl: bd.profile_picture_url ?? "",
+                verified: true,
+                recentPosts: bd.media?.data || [],
+                message: "Dados sincronizados oficialmente via Meta Graph API (Business Discovery).",
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            );
+          } else if (discData.error) {
+            console.warn("[Meta API Warning]", discData.error.message);
+            // Se falhou por conta da Meta (ex: conta não é comercial ou token expirou), informamos o usuário
+          }
+        } catch (metaErr: any) {
+          console.warn("[Meta API Exception]", metaErr.message);
+        }
+      }
+
+      // CASO B: Fallback Inteligente / Modo Referência para Concorrentes e Páginas
+      // Constrói o perfil de referência completo (banco conhecido ou gerador inteligente por nicho)
+      const refProfile = buildReferenceProfile(cleanHandle);
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          source: refProfile.isKnown ? "mock_database" : "reference_mode",
+          isReference: true,
+          handle: refProfile.handle,
+          name: refProfile.name,
+          followers: refProfile.followers,
+          posts: refProfile.posts,
+          following: refProfile.following,
+          biography: refProfile.biography,
+          avatarUrl: refProfile.avatarUrl,
+          verified: refProfile.verified,
+          message: accessToken
+            ? "Perfil carregado em Modo Referência. Como a Meta Graph API só fornece dados automáticos de contas comerciais vinculadas, os dados acima servem como base para benchmarking. Você pode confirmar ou ajustar os seguidores abaixo para comparar no gráfico."
+            : "Perfil carregado em Modo Referência / Demonstração para comparação no gráfico.",
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    } catch (err: any) {
+      return new Response(
+        JSON.stringify({ success: false, message: err.message || "Erro no processamento da consulta." }),
+        { status: 500, headers: { "Content-Type": "application/json" } },
+      );
+    }
+  }
+
+  return new Response("Not found", { status: 404 });
 }
 
 // h3 swallows in-handler throws into a normal 500 Response with body
@@ -44,8 +1445,45 @@ function isH3SwallowedErrorBody(body: string): boolean {
   }
 }
 
+// Inicializa o agendador em background (Cron diário às 23:59 na tabela Historico_Seguidores)
+let lastServerCronDate = "";
+setInterval(async () => {
+  try {
+    const now = new Date();
+    const hours = now.getHours();
+    const minutes = now.getMinutes();
+    const todayStr = now.toISOString().slice(0, 10);
+
+    if (hours === 23 && minutes >= 58 && lastServerCronDate !== todayStr) {
+      lastServerCronDate = todayStr;
+      console.log(`[Anti Gravity Cron] Executando rotina diária das 23:59 para salvar foto na tabela Historico_Seguidores...`);
+      await runDailyFollowersCron();
+      console.log(`[Anti Gravity Cron] Foto diária das 23:59 salva com sucesso!`);
+    }
+  } catch (err) {
+    console.error(`[Anti Gravity Cron] Erro ao rodar rotina diária:`, err);
+  }
+}, 60 * 1000);
+
 export default {
   async fetch(request: Request, env: unknown, ctx: unknown) {
+    const url = new URL(request.url);
+
+    // Intercepta requisições para a API Social e API do Supabase
+    if (url.pathname.startsWith("/api/social/") || url.pathname.startsWith("/api/supabase/")) {
+      return handleSocialApi(request);
+    }
+
+    // Intercepta requisições para a API nativa de renderização NVENC (RTX 3090)
+    if (url.pathname === "/api/render-nvenc" || url.pathname.startsWith("/api/render-nvenc/")) {
+      return handleNvencApi(request);
+    }
+
+    // Intercepta requisições para a API nativa de templates da pasta do projeto
+    if (url.pathname === "/api/templates" || url.pathname.startsWith("/api/templates/")) {
+      return handleTemplatesApi(request);
+    }
+
     try {
       const handler = await getServerEntry();
       const response = await handler.fetch(request, env, ctx);

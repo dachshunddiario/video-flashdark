@@ -1,508 +1,761 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useMemo, useRef, useState } from "react";
+import { useState, useRef, useMemo, useEffect } from "react";
 import {
-  FolderOpen,
-  Play,
-  Save,
-  Trash2,
-  Terminal,
+  Layers,
+  Sliders,
+  Film,
   Sparkles,
-  Loader2,
+  Play,
+  Download,
+  AlertCircle,
+  HardDrive,
   CheckCircle2,
-  RotateCcw,
 } from "lucide-react";
-import { PageHeader } from "@/components/PageHeader";
-import { STORAGE_KEYS, uid, useLocalState } from "@/lib/local-store";
+import { Button } from "@/components/ui/button";
+import { TemplatePanel } from "@/components/editor/TemplatePanel";
+import { EditorTabPanel } from "@/components/editor/EditorTabPanel";
+import { VideoCanvasPreview } from "@/components/editor/VideoCanvasPreview";
+import { BatchProcessingModal } from "@/components/editor/BatchProcessingModal";
+import { STORAGE_KEYS, useLocalState, uid } from "@/lib/local-store";
 import {
-  DEFAULT_PRESET,
-  DEFAULT_SETTINGS,
-  type AppSettings,
-  type EditorPreset,
-  type QueueItem,
+  DEFAULT_ADJUSTMENT,
+  DEFAULT_TEMPLATE_VISUAL,
   type Template,
+  type TemplateVisual,
+  type VideoAdjustment,
+  type VideoQueueItem,
 } from "@/lib/types";
-import {
-  buildFfmpegArgs,
-  isDesktopRuntime,
-  previewCommand,
-  runFfmpegLocal,
-} from "@/lib/ffmpeg-local";
-import { cn } from "@/lib/utils";
+import { VideoProcessor, getBatchFileName, type ProcessedVideoResult } from "@/lib/video-processor";
+import { downloadBlob } from "@/lib/zip-utils";
 
 export const Route = createFileRoute("/editor")({
   head: () => ({
     meta: [
-      { title: "Editor em massa · Studio Local" },
+      { title: "Video Flash · Vídeos em Massa com GPU · Studio Local" },
       {
         name: "description",
         content:
-          "Aplique presets de corte, velocidade, zoom e marca d'água em vários vídeos de uma vez com FFmpeg local.",
+          "Video Flash: Crie templates visuais e processe em massa vídeos verticais (9:16) no seu computador com NVIDIA RTX 3090 NVENC acelerado e exportação ZIP.",
       },
-      { property: "og:title", content: "Editor em massa · Studio Local" },
+      { property: "og:title", content: "Video Flash · Studio Local" },
       {
         property: "og:description",
-        content:
-          "Fila de edição em massa com FFmpeg local — seus arquivos nunca saem do computador.",
+        content: "Video Flash: Produção de vídeos em massa 100% local com GPU NVENC e exportação ZIP.",
       },
     ],
   }),
   component: EditorPage,
 });
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <label className="block">
-      <span className="mb-1.5 block text-xs uppercase tracking-wider text-muted-foreground">
-        {label}
-      </span>
-      {children}
-    </label>
-  );
-}
-
-const inputCls =
-  "w-full rounded-lg border border-input bg-secondary/40 px-3 py-2 text-sm outline-none transition focus:border-primary/60 focus:ring-2 focus:ring-ring";
-
 function EditorPage() {
-  const { value: preset, setValue: setPreset } = useLocalState<EditorPreset>(
-    STORAGE_KEYS.editorPrefs,
-    DEFAULT_PRESET,
-  );
-  const { value: templates, setValue: setTemplates } = useLocalState<Template[]>(
+  // Configuração global de Template e Ajustes
+  const [globalTemplate, setGlobalTemplate] = useState<TemplateVisual>(DEFAULT_TEMPLATE_VISUAL);
+  const [globalAdjustment, setGlobalAdjustment] = useState<VideoAdjustment>(DEFAULT_ADJUSTMENT);
+
+  // Lista de templates salvos no armazenamento local
+  const { value: savedTemplates, setValue: setSavedTemplates } = useLocalState<Template[]>(
     STORAGE_KEYS.templates,
     [],
   );
-  const { value: settings, setValue: setSettings } = useLocalState<AppSettings>(
-    STORAGE_KEYS.appSettings,
-    DEFAULT_SETTINGS,
-  );
 
-  const [queue, setQueue] = useState<QueueItem[]>([]);
-  const [running, setRunning] = useState(false);
-  const fileRef = useRef<HTMLInputElement>(null);
-  const desktop = isDesktopRuntime();
+  // Fila de vídeos (até 100 vídeos)
+  const [queue, setQueue] = useState<VideoQueueItem[]>([]);
+  const [selectedIndex, setSelectedIndex] = useState<number>(0);
 
-  const set = <K extends keyof EditorPreset>(key: K, v: EditorPreset[K]) =>
-    setPreset({ ...preset, [key]: v });
+  // Status da aceleração por hardware nativa (RTX 3090)
+  const [isNvencActive, setIsNvencActive] = useState<boolean>(false);
 
-  const command = useMemo(
-    () => previewCommand(settings.ffmpegPath, queue[0]?.name ?? "entrada.mp4", preset),
-    [settings.ffmpegPath, queue, preset],
-  );
+  useEffect(() => {
+    VideoProcessor.isNativeNvencAvailable().then(setIsNvencActive);
+  }, []);
 
-  function addFiles(files: FileList | null) {
-    if (!files) return;
-    const items: QueueItem[] = Array.from(files).map((f) => ({
-      id: uid(),
-      name: f.name,
-      sizeMB: +(f.size / 1024 / 1024).toFixed(1),
-      status: "pendente",
-      progress: 0,
-    }));
-    setQueue((q) => [...q, ...items]);
-  }
+  // Modo de aplicação: true = aplica a todos os vídeos; false = edita somente o selecionado
+  const [applyToAll, setApplyToAll] = useState<boolean>(true);
 
-  async function processQueue() {
-    setRunning(true);
-    for (const item of queue) {
-      if (item.status === "concluido") continue;
-      setQueue((q) =>
-        q.map((i) => (i.id === item.id ? { ...i, status: "processando", progress: 5 } : i)),
-      );
-      try {
-        if (desktop) {
-          const out = `${preset.outputDir}/${item.name.replace(/\.[^.]+$/, "")}_edit.${preset.outputFormat}`;
-          await runFfmpegLocal(buildFfmpegArgs(item.name, out, preset));
-        } else {
-          for (let p = 20; p <= 100; p += 20) {
-            await new Promise((r) => setTimeout(r, 180));
-            setQueue((q) => q.map((i) => (i.id === item.id ? { ...i, progress: p } : i)));
+  // Aba ativa na coluna esquerda: "template" ou "editor" (Fila + Ajustes)
+  const [activeLeftTab, setActiveLeftTab] = useState<"template" | "editor">("template");
+
+  // Elemento selecionado no canvas de preview
+  const [selectedCanvasElement, setSelectedCanvasElement] = useState<
+    | "profile"
+    | "pageName"
+    | "badge"
+    | "headline"
+    | "subHeadline"
+    | "watermark"
+    | "video"
+    | "background"
+    | null
+  >("headline");
+
+  const handleSelectCanvasElement = (
+    el:
+      | "profile"
+      | "pageName"
+      | "badge"
+      | "headline"
+      | "subHeadline"
+      | "watermark"
+      | "video"
+      | "background"
+      | null,
+  ) => {
+    setSelectedCanvasElement(el);
+    if (el === "video") {
+      setActiveLeftTab("editor");
+    } else if (el && activeLeftTab === "template") {
+      // Mantém na aba template se estiver liberada
+    }
+  };
+
+  // Recorte Automático Inteligente: analisa cada vídeo individualmente para isolar estritamente a filmagem e cortar templates
+  const handleAutoCropVideoLayer = async () => {
+    if (applyToAll && queue.length > 1) {
+      // MODO EM MASSA (TODOS): Analisa CADA VÍDEO DA FILA INDIVIDUALMENTE!
+      // Cada vídeo tem sua própria detecção personalizada baseada no seu conteúdo real.
+      const updatedQueue = [...queue];
+
+      for (let i = 0; i < updatedQueue.length; i++) {
+        const item = updatedQueue[i];
+        if (!item) continue;
+
+        let detected = { cropTop: 0, cropBottom: 0, cropLeft: 0, cropRight: 0 };
+        // Se for o vídeo atualmente em exibição na tela, usa o elemento <video> direto (instantâneo e perfeito)
+        if (i === selectedIndex) {
+          const videoEl = document.querySelector("video");
+          if (videoEl && videoEl.videoWidth > 0) {
+            detected = await VideoProcessor.detectActiveFootage(videoEl);
+          } else {
+            detected = await VideoProcessor.detectActiveFootageFromFile(item.file);
           }
+        } else {
+          detected = await VideoProcessor.detectActiveFootageFromFile(item.file);
         }
-        setQueue((q) =>
-          q.map((i) =>
-            i.id === item.id
-              ? {
-                  ...i,
-                  status: "concluido",
-                  progress: 100,
-                  message: desktop ? "Salvo em " + preset.outputDir : "Simulado (modo navegador)",
-                }
-              : i,
-          ),
-        );
-      } catch (e) {
-        setQueue((q) =>
-          q.map((i) =>
-            i.id === item.id
-              ? { ...i, status: "erro", message: (e as Error).message, progress: 0 }
-              : i,
-          ),
-        );
+
+        const baseAdj = item.customAdjustment || globalAdjustment;
+        updatedQueue[i] = {
+          ...item,
+          customAdjustment: {
+            ...baseAdj,
+            cropTop: detected.cropTop,
+            cropBottom: detected.cropBottom,
+            cropLeft: detected.cropLeft,
+            cropRight: detected.cropRight,
+            cropMode: "auto",
+            videoX: baseAdj.videoX ?? 50,
+            videoY: baseAdj.videoY ?? 53,
+            videoWidth: baseAdj.videoWidth ?? 96,
+          },
+        };
+      }
+
+      setQueue(updatedQueue);
+
+      // Atualiza o globalAdjustment com os metadados do vídeo atual para sincronia
+      const currentUpdated = updatedQueue[selectedIndex]?.customAdjustment;
+      if (currentUpdated) {
+        setGlobalAdjustment((prev) => ({
+          ...prev,
+          videoX: currentUpdated.videoX ?? prev.videoX ?? 50,
+          videoY: currentUpdated.videoY ?? prev.videoY ?? 53,
+          videoWidth: currentUpdated.videoWidth ?? prev.videoWidth ?? 96,
+          cropMode: "auto",
+        }));
+      }
+    } else {
+      // MODO INDIVIDUAL: Analisa apenas o vídeo atualmente selecionado
+      const video = document.querySelector("video");
+      let detected = { cropTop: 0, cropBottom: 0, cropLeft: 0, cropRight: 0 };
+      if (video && video.videoWidth > 0) {
+        detected = await VideoProcessor.detectActiveFootage(video);
+      } else if (currentVideo) {
+        detected = await VideoProcessor.detectActiveFootageFromFile(currentVideo.file);
+      }
+
+      const updatedAdjustment: VideoAdjustment = {
+        ...activeAdjustment,
+        cropTop: detected.cropTop,
+        cropBottom: detected.cropBottom,
+        cropLeft: detected.cropLeft,
+        cropRight: detected.cropRight,
+        cropMode: "auto",
+        videoX: activeAdjustment.videoX ?? 50,
+        videoY: activeAdjustment.videoY ?? 53,
+        videoWidth: activeAdjustment.videoWidth ?? 96,
+        zoom: activeAdjustment.zoom || 1.0,
+      };
+
+      setQueue((prev) =>
+        prev.map((item, idx) =>
+          idx === selectedIndex
+            ? { ...item, customAdjustment: { ...updatedAdjustment } }
+            : item,
+        ),
+      );
+    }
+  };
+
+  // Estados do Modal de Processamento
+  const [isProcessModalOpen, setIsProcessModalOpen] = useState(false);
+  const [processStatus, setProcessStatus] = useState<
+    "idle" | "confirming" | "processing" | "finished" | "cancelled"
+  >("idle");
+
+  const [batchStartTime, setBatchStartTime] = useState<Date | null>(null);
+  const [batchEndTime, setBatchEndTime] = useState<Date | null>(null);
+  const [batchConcurrency, setBatchConcurrency] = useState<number>(5);
+
+  const [processedResults, setProcessedResults] = useState<ProcessedVideoResult[]>([]);
+  const [currentProcessingName, setCurrentProcessingName] = useState<string>("");
+  const [currentVideoProgress, setCurrentVideoProgress] = useState<number>(0);
+  const [overallProgress, setOverallProgress] = useState<number>(0);
+  const [zipBlob, setZipBlob] = useState<Blob | null>(null);
+
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  const handleDownloadVideo = (item: VideoQueueItem) => {
+    if (!item.processedBlob) return;
+    const isMp4 = item.processedBlob.type.includes("mp4");
+    const itemIndex = queue.findIndex((q) => q.id === item.id);
+    const num = itemIndex >= 0 ? itemIndex + 1 : 1;
+    downloadBlob(item.processedBlob, getBatchFileName(num, isMp4 ? "mp4" : "webm"));
+  };
+
+  // Vídeo atualmente selecionado
+  const currentVideo = queue[selectedIndex] || null;
+
+  // Template e Ajuste ativos para o vídeo selecionado (respeita modo individual ou global)
+  const activeTemplate = useMemo(() => {
+    if (!applyToAll && currentVideo?.customTemplate) {
+      return currentVideo.customTemplate;
+    }
+    return globalTemplate;
+  }, [applyToAll, currentVideo, globalTemplate]);
+
+  const activeAdjustment = useMemo<VideoAdjustment>(() => {
+    if (currentVideo?.customAdjustment) {
+      if (applyToAll) {
+        // No modo Todos, preserva os cortes de margem (cropTop, cropBottom, etc.) individuais de CADA vídeo
+        const res: VideoAdjustment = {
+          ...globalAdjustment,
+          ...currentVideo.customAdjustment,
+          cropTop: currentVideo.customAdjustment.cropTop ?? globalAdjustment.cropTop ?? 0,
+          cropBottom: currentVideo.customAdjustment.cropBottom ?? globalAdjustment.cropBottom ?? 0,
+          cropLeft: currentVideo.customAdjustment.cropLeft ?? globalAdjustment.cropLeft ?? 0,
+          cropRight: currentVideo.customAdjustment.cropRight ?? globalAdjustment.cropRight ?? 0,
+          cropMode: currentVideo.customAdjustment.cropMode ?? globalAdjustment.cropMode,
+        };
+        return res;
+      }
+      return currentVideo.customAdjustment;
+    }
+    return globalAdjustment;
+  }, [applyToAll, currentVideo, globalAdjustment]);
+
+  // Atualização de Template
+  const handleUpdateTemplate = (updated: TemplateVisual) => {
+    if (applyToAll || !currentVideo) {
+      setGlobalTemplate(updated);
+      setQueue((prev) =>
+        prev.map((item) => ({ ...item, customTemplate: { ...updated } })),
+      );
+    } else {
+      setQueue((prev) =>
+        prev.map((item, idx) =>
+          idx === selectedIndex ? { ...item, customTemplate: updated } : item,
+        ),
+      );
+    }
+  };
+
+  // Atualização de Ajustes de Vídeo (Sincroniza em massa ou individual)
+  const handleUpdateAdjustment = (updated: VideoAdjustment) => {
+    if (applyToAll) {
+      setGlobalAdjustment(updated);
+      setQueue((prev) =>
+        prev.map((item, idx) => {
+          if (idx === selectedIndex) {
+            return { ...item, customAdjustment: { ...updated } };
+          }
+          // Para outros vídeos na fila: sincroniza parâmetros globais, mas PRESERVA os cortes únicos já detectados!
+          const existing = item.customAdjustment;
+          const merged: VideoAdjustment = {
+            ...updated,
+            cropTop: existing?.cropTop ?? updated.cropTop ?? 0,
+            cropBottom: existing?.cropBottom ?? updated.cropBottom ?? 0,
+            cropLeft: existing?.cropLeft ?? updated.cropLeft ?? 0,
+            cropRight: existing?.cropRight ?? updated.cropRight ?? 0,
+            cropMode: existing?.cropMode ?? updated.cropMode,
+          };
+          return {
+            ...item,
+            customAdjustment: merged,
+          };
+        }),
+      );
+    } else {
+      setQueue((prev) =>
+        prev.map((item, idx) =>
+          idx === selectedIndex ? { ...item, customAdjustment: updated } : item,
+        ),
+      );
+    }
+  };
+
+  // Aplica os ajustes do vídeo atual para todos os outros na fila
+  const handleApplyCurrentToAll = () => {
+    setGlobalAdjustment(activeAdjustment);
+    setQueue((prev) =>
+      prev.map((item) => ({ ...item, customAdjustment: { ...activeAdjustment } })),
+    );
+    setApplyToAll(true);
+  };
+
+  // Gerenciamento da Fila de Vídeos
+  const handleAddFiles = (newItems: VideoQueueItem[]) => {
+    setQueue((prev) => {
+      const remaining = 100 - prev.length;
+      return [...prev, ...newItems.slice(0, remaining)];
+    });
+  };
+
+  const handleRemoveItem = (id: string) => {
+    setQueue((prev) => {
+      const next = prev.filter((item) => item.id !== id);
+      if (selectedIndex >= next.length) {
+        setSelectedIndex(Math.max(0, next.length - 1));
+      }
+      return next;
+    });
+  };
+
+  const handleClearQueue = () => {
+    setQueue([]);
+    setSelectedIndex(0);
+  };
+
+  const handleMoveItem = (fromIndex: number, toIndex: number) => {
+    if (toIndex < 0 || toIndex >= queue.length) return;
+    setQueue((prev) => {
+      const updated = [...prev];
+      const [moved] = updated.splice(fromIndex, 1);
+      if (moved) {
+        updated.splice(toIndex, 0, moved);
+      }
+      return updated;
+    });
+    setSelectedIndex(toIndex);
+  };
+
+  // Presets de Template
+  const handleSavePreset = (name: string) => {
+    const newTpl: Template = {
+      id: uid(),
+      name,
+      createdAt: new Date().toISOString(),
+      preset: {
+        aspect: "9:16",
+        speed: 1,
+        zoom: 0,
+        mirror: false,
+        removeAudio: false,
+        fps: 30,
+        crf: 22,
+        trimStart: 0,
+        trimEnd: 0,
+        brightness: 0,
+        saturation: 1,
+        watermarkText: "",
+        outputFormat: "mp4",
+        outputDir: "",
+      },
+      visual: globalTemplate,
+    };
+    setSavedTemplates([...savedTemplates, newTpl]);
+    alert(`Template "${name}" salvo com sucesso!`);
+  };
+
+  const handleLoadPreset = (tpl: TemplateVisual) => {
+    setGlobalTemplate(tpl);
+  };
+
+  // INÍCIO DO PROCESSAMENTO EM MASSA
+  const openConfirmation = () => {
+    if (queue.length === 0) {
+      alert("Por favor, adicione pelo menos um vídeo na fila antes de processar.");
+      return;
+    }
+    setProcessStatus("confirming");
+    setIsProcessModalOpen(true);
+  };
+
+  const startProcessingQueue = async () => {
+    setProcessStatus("processing");
+    setZipBlob(null);
+
+    const startTime = new Date();
+    setBatchStartTime(startTime);
+    setBatchEndTime(null);
+    VideoProcessor.clearOverlayCache();
+
+    abortControllerRef.current = new AbortController();
+    const signal = abortControllerRef.current.signal;
+
+    const total = queue.length;
+    if (total === 0) return;
+
+    // Coleta vídeos que já foram previamente concluídos (NÃO serão reprocessados!)
+    const results: ProcessedVideoResult[] = [];
+    queue.forEach((it, idx) => {
+      if (it.status === "concluido" && it.processedBlob) {
+        const isMp4 = it.processedBlob.type.includes("mp4");
+        results.push({
+          id: it.id,
+          name: getBatchFileName(idx + 1, isMp4 ? "mp4" : "webm"),
+          blob: it.processedBlob,
+          sizeMB: Number((it.processedBlob.size / (1024 * 1024)).toFixed(1)),
+        });
+      }
+    });
+
+    let completedCount = results.length;
+    setOverallProgress(Math.round((completedCount / total) * 100));
+
+    // Processamento Paralelo Otimizado na RTX 3090 (5 em 5 ou 10 em 10 simultâneos)
+    const CONCURRENCY = Math.max(1, batchConcurrency);
+
+    const pendingIndices: number[] = [];
+    for (let i = 0; i < total; i++) {
+      const it = queue[i];
+      if (it && !(it.status === "concluido" && it.processedBlob)) {
+        pendingIndices.push(i);
       }
     }
-    setRunning(false);
-  }
 
-  function saveTemplate() {
-    const name = window.prompt("Nome do template:");
-    if (!name) return;
-    setTemplates([
-      { id: uid(), name, createdAt: new Date().toISOString(), preset },
-      ...templates,
-    ]);
-  }
+    const processItemIndex = async (i: number) => {
+      if (signal.aborted) return;
+      const item = queue[i];
+      if (!item) return;
+
+      setCurrentProcessingName(item.name);
+
+      // Marca o item como processando
+      setQueue((prev) =>
+        prev.map((it) => (it.id === item.id ? { ...it, status: "processando", progress: 0 } : it))
+      );
+
+      const baseAdj = item.customAdjustment || globalAdjustment;
+      const adjToUse: VideoAdjustment = {
+        ...globalAdjustment,
+        ...baseAdj,
+        cropTop: item.customAdjustment?.cropTop ?? globalAdjustment.cropTop ?? 0,
+        cropBottom: item.customAdjustment?.cropBottom ?? globalAdjustment.cropBottom ?? 0,
+        cropLeft: item.customAdjustment?.cropLeft ?? globalAdjustment.cropLeft ?? 0,
+        cropRight: item.customAdjustment?.cropRight ?? globalAdjustment.cropRight ?? 0,
+        cropMode: item.customAdjustment?.cropMode ?? globalAdjustment.cropMode ?? "auto",
+      };
+      const tplToUse = item.customTemplate || globalTemplate;
+
+      try {
+        // Renderização ultra-rápida via GPU NVIDIA NVENC ou WebCodecs
+        const blob = await VideoProcessor.processVideo(
+          item.file,
+          adjToUse,
+          tplToUse,
+          (progress) => {
+            setCurrentVideoProgress(progress);
+            setQueue((prev) => {
+              const updated = prev.map((it) => (it.id === item.id ? { ...it, progress } : it));
+              const totalSum = updated.reduce((acc, curr) => {
+                if (curr.status === "concluido") return acc + 100;
+                if (curr.status === "processando") return acc + (curr.progress || 0);
+                return acc;
+              }, 0);
+              setOverallProgress(Math.round(totalSum / (total || 1)));
+              return updated;
+            });
+          },
+          signal,
+        );
+
+        const isMp4 = blob.type.includes("mp4");
+        const itemNumber = i + 1;
+        const filename = getBatchFileName(itemNumber, isMp4 ? "mp4" : "webm");
+        const processedMB = Number((blob.size / (1024 * 1024)).toFixed(1));
+
+        const resultItem: ProcessedVideoResult = {
+          id: item.id,
+          name: filename,
+          blob,
+          sizeMB: processedMB,
+        };
+
+        results.push(resultItem);
+        completedCount++;
+
+        // MARCA COMO CONCLUÍDO COM CHECK VERDE POSITIVO E SALVA O BLOB PARA DOWNLOAD IMEDIATO
+        setQueue((prev) => {
+          const updated: VideoQueueItem[] = prev.map((it) =>
+            it.id === item.id
+              ? { ...it, status: "concluido" as const, progress: 100, processedBlob: blob, sizeMB: processedMB }
+              : it
+          );
+          const totalSum = updated.reduce((acc, curr) => {
+            if (curr.status === "concluido") return acc + 100;
+            if (curr.status === "processando") return acc + (curr.progress || 0);
+            return acc;
+          }, 0);
+          setOverallProgress(Math.round(totalSum / (total || 1)));
+          return updated;
+        });
+        setCurrentVideoProgress(100);
+      } catch (err: any) {
+        if (signal.aborted) return;
+        console.error(`Erro ao processar vídeo ${item.name}:`, err);
+        setQueue((prev) =>
+          prev.map((it) =>
+            it.id === item.id
+              ? { ...it, status: "erro", errorMessage: err?.message || "Falha na renderização" }
+              : it
+          )
+        );
+      }
+    };
+
+    let nextIdx = 0;
+    const workerCount = Math.min(CONCURRENCY, pendingIndices.length);
+    const workers = Array.from({ length: workerCount }, async () => {
+      while (nextIdx < pendingIndices.length && !signal.aborted) {
+        const idx = pendingIndices[nextIdx++];
+        if (typeof idx === "number") {
+          await processItemIndex(idx);
+        }
+      }
+    });
+
+    await Promise.all(workers);
+
+    setProcessedResults(results);
+
+    // Se houver vídeos concluídos (mesmo se cancelado o restante), gera o arquivo ZIP consolidado
+    if (results.length > 0) {
+      try {
+        const zip = await VideoProcessor.createZipArchive(results);
+        setZipBlob(zip);
+      } catch (zipErr) {
+        console.error("Erro ao gerar arquivo ZIP consolidado:", zipErr);
+      }
+    }
+
+    const endTime = new Date();
+    setBatchEndTime(endTime);
+
+    if (signal.aborted) {
+      setProcessStatus("cancelled");
+    } else {
+      setProcessStatus("finished");
+    }
+  };
+
+  const handleCancelProcessing = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+  };
+
+  const handleRetryFailed = () => {
+    // Filtra apenas os que estão com status erro e reinicia
+    startProcessingQueue();
+  };
+
+  const handleClearTempFiles = () => {
+    setProcessedResults([]);
+    setZipBlob(null);
+    setQueue((prev) =>
+      prev.map((it) => ({ ...it, status: "pendente", progress: 0, processedBlob: undefined })),
+    );
+  };
+
+  // Contadores de status
+  const successCount = queue.filter((i) => i.status === "concluido").length;
+  const errorCount = queue.filter((i) => i.status === "erro").length;
 
   return (
-    <div className="mx-auto max-w-[1400px] px-10 py-9">
-      <PageHeader
-        title="Editor em massa"
-        subtitle="Aplique um preset a vários vídeos de uma vez. O processamento usa o FFmpeg instalado na sua máquina."
-        actions={
-          <>
-            <button
-              onClick={saveTemplate}
-              className="inline-flex items-center gap-2 rounded-lg border border-border bg-secondary/50 px-3.5 py-2 text-sm hover:bg-secondary"
-            >
-              <Save className="size-4" /> Salvar template
-            </button>
-            <button
-              onClick={processQueue}
-              disabled={running || queue.length === 0}
-              className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:brightness-110 disabled:opacity-40"
-            >
-              {running ? (
-                <Loader2 className="size-4 animate-spin" />
-              ) : (
-                <Play className="size-4" />
-              )}
-              Processar {queue.length > 0 ? `(${queue.length})` : ""}
-            </button>
-          </>
-        }
-      />
-
-      {!desktop && (
-        <div className="mb-6 rounded-lg border border-warning/30 bg-warning/10 px-4 py-3 text-sm text-warning">
-          Modo navegador: a fila roda em simulação. Ao empacotar como aplicativo desktop, o
-          comando FFmpeg abaixo é executado de verdade nos seus arquivos locais.
-        </div>
-      )}
-
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_23rem]">
-        <div className="space-y-6">
-          <section className="panel p-6">
-            <div className="flex items-center justify-between">
-              <h2 className="text-sm font-semibold">Arquivos locais</h2>
-              <button
-                onClick={() => fileRef.current?.click()}
-                className="inline-flex items-center gap-2 rounded-lg border border-border bg-secondary/50 px-3 py-1.5 text-xs hover:bg-secondary"
-              >
-                <FolderOpen className="size-3.5" /> Selecionar vídeos
-              </button>
-            </div>
-            <input
-              ref={fileRef}
-              type="file"
-              accept="video/*"
-              multiple
-              hidden
-              onChange={(e) => addFiles(e.target.files)}
-            />
-
-            {queue.length === 0 ? (
-              <div className="mt-5 grid place-items-center rounded-lg border border-dashed border-border py-14 text-center">
-                <Sparkles className="size-5 text-primary/70" />
-                <p className="mt-3 text-sm text-muted-foreground">
-                  Nenhum vídeo na fila. Selecione arquivos do seu computador.
-                </p>
-              </div>
-            ) : (
-              <ul className="mt-5 space-y-2">
-                {queue.map((item) => (
-                  <li
-                    key={item.id}
-                    className="rounded-lg border border-border bg-secondary/30 px-4 py-3"
-                  >
-                    <div className="flex items-center gap-3">
-                      <span className="truncate text-sm">{item.name}</span>
-                      <span className="ml-auto shrink-0 text-xs tabular-nums text-muted-foreground">
-                        {item.sizeMB} MB
-                      </span>
-                      <span
-                        className={cn(
-                          "shrink-0 rounded-md px-2 py-0.5 text-[11px]",
-                          item.status === "concluido" && "bg-success/15 text-success",
-                          item.status === "processando" && "bg-primary/15 text-primary",
-                          item.status === "erro" && "bg-destructive/15 text-destructive",
-                          item.status === "pendente" && "bg-muted text-muted-foreground",
-                        )}
-                      >
-                        {item.status}
-                      </span>
-                      <button
-                        onClick={() => setQueue((q) => q.filter((i) => i.id !== item.id))}
-                        className="shrink-0 text-muted-foreground hover:text-destructive"
-                      >
-                        <Trash2 className="size-3.5" />
-                      </button>
-                    </div>
-                    {item.progress > 0 && item.status !== "concluido" && (
-                      <div className="mt-2.5 h-1 overflow-hidden rounded-full bg-muted">
-                        <div
-                          className="h-full rounded-full bg-primary transition-all"
-                          style={{ width: `${item.progress}%` }}
-                        />
-                      </div>
-                    )}
-                    {item.message && (
-                      <p className="mt-2 flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                        <CheckCircle2 className="size-3" /> {item.message}
-                      </p>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-
-          <section className="panel p-6">
-            <div className="flex items-center gap-2">
-              <Terminal className="size-4 text-primary" />
-              <h2 className="text-sm font-semibold">Comando FFmpeg gerado</h2>
-            </div>
-            <pre className="scrollbar-slim mt-4 overflow-x-auto rounded-lg bg-background/70 p-4 font-mono text-[11.5px] leading-relaxed text-muted-foreground">
-              {command}
-            </pre>
-          </section>
-
-          <section className="panel p-6">
-            <h2 className="text-sm font-semibold">Templates salvos</h2>
-            {templates.length === 0 ? (
-              <p className="mt-4 text-sm text-muted-foreground">
-                Nenhum template. Ajuste o preset e salve para reutilizar.
-              </p>
-            ) : (
-              <ul className="mt-4 grid gap-2 sm:grid-cols-2">
-                {templates.map((t) => (
-                  <li
-                    key={t.id}
-                    className="flex items-center gap-3 rounded-lg border border-border bg-secondary/30 px-4 py-3"
-                  >
-                    <span className="truncate text-sm">{t.name}</span>
-                    <button
-                      onClick={() => setPreset(t.preset)}
-                      className="ml-auto shrink-0 rounded-md bg-primary/15 px-2 py-1 text-[11px] text-primary hover:bg-primary/25"
-                    >
-                      Aplicar
-                    </button>
-                    <button
-                      onClick={() => setTemplates(templates.filter((x) => x.id !== t.id))}
-                      className="shrink-0 text-muted-foreground hover:text-destructive"
-                    >
-                      <Trash2 className="size-3.5" />
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
+    <div className="mx-auto max-w-[1600px] p-4 sm:p-6 lg:p-8 space-y-4">
+      {/* Topo do Video Flash */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between border-b border-border/60 pb-4">
+        <div>
+          <div className="flex items-center gap-2.5">
+            <h1 className="text-xl font-bold tracking-tight text-foreground sm:text-2xl">
+              Video Flash
+            </h1>
+            <span className="rounded-full bg-primary/10 border border-primary/30 px-2.5 py-0.5 text-[11px] font-mono text-primary font-semibold">
+              9:16 Vertical
+            </span>
+          </div>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            Renderização em massa acelerada por hardware na GPU com templates e corte de alta precisão.
+          </p>
         </div>
 
-        <aside className="space-y-6">
-          <section className="panel space-y-4 p-6">
-            <div className="flex items-center justify-between">
-              <h2 className="text-sm font-semibold">Preset de edição</h2>
-              <button
-                onClick={() => setPreset(DEFAULT_PRESET)}
-                className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground"
-              >
-                <RotateCcw className="size-3" /> Padrão
-              </button>
+        {/* Botão Principal de Processamento */}
+        <div className="flex items-center gap-3">
+          {isNvencActive ? (
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-semibold shadow-sm">
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+              </span>
+              NVIDIA RTX 3090 (NVENC 4x Ativo)
             </div>
-
-            <Field label="Proporção">
-              <select
-                className={inputCls}
-                value={preset.aspect}
-                onChange={(e) => set("aspect", e.target.value as EditorPreset["aspect"])}
-              >
-                <option value="9:16">9:16 vertical</option>
-                <option value="1:1">1:1 quadrado</option>
-                <option value="16:9">16:9 horizontal</option>
-                <option value="original">Original</option>
-              </select>
-            </Field>
-
-            <div className="grid grid-cols-2 gap-3">
-              <Field label={`Velocidade ${preset.speed}x`}>
-                <input
-                  type="range"
-                  min={0.5}
-                  max={2}
-                  step={0.05}
-                  value={preset.speed}
-                  onChange={(e) => set("speed", +e.target.value)}
-                  className="w-full accent-[var(--primary)]"
-                />
-              </Field>
-              <Field label={`Zoom ${preset.zoom}%`}>
-                <input
-                  type="range"
-                  min={0}
-                  max={30}
-                  value={preset.zoom}
-                  onChange={(e) => set("zoom", +e.target.value)}
-                  className="w-full accent-[var(--primary)]"
-                />
-              </Field>
-              <Field label={`Brilho ${preset.brightness.toFixed(2)}`}>
-                <input
-                  type="range"
-                  min={-0.3}
-                  max={0.3}
-                  step={0.01}
-                  value={preset.brightness}
-                  onChange={(e) => set("brightness", +e.target.value)}
-                  className="w-full accent-[var(--primary)]"
-                />
-              </Field>
-              <Field label={`Saturação ${preset.saturation.toFixed(2)}`}>
-                <input
-                  type="range"
-                  min={0}
-                  max={2}
-                  step={0.05}
-                  value={preset.saturation}
-                  onChange={(e) => set("saturation", +e.target.value)}
-                  className="w-full accent-[var(--primary)]"
-                />
-              </Field>
-              <Field label="Cortar início (s)">
-                <input
-                  type="number"
-                  min={0}
-                  className={inputCls}
-                  value={preset.trimStart}
-                  onChange={(e) => set("trimStart", +e.target.value)}
-                />
-              </Field>
-              <Field label="Cortar fim (s)">
-                <input
-                  type="number"
-                  min={0}
-                  className={inputCls}
-                  value={preset.trimEnd}
-                  onChange={(e) => set("trimEnd", +e.target.value)}
-                />
-              </Field>
-              <Field label="FPS">
-                <input
-                  type="number"
-                  min={15}
-                  max={60}
-                  className={inputCls}
-                  value={preset.fps}
-                  onChange={(e) => set("fps", +e.target.value)}
-                />
-              </Field>
-              <Field label="Qualidade (CRF)">
-                <input
-                  type="number"
-                  min={16}
-                  max={32}
-                  className={inputCls}
-                  value={preset.crf}
-                  onChange={(e) => set("crf", +e.target.value)}
-                />
-              </Field>
+          ) : (
+            <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-blue-500/10 border border-blue-500/30 text-blue-400 text-xs font-medium">
+              GPU WebCodecs Ativa
             </div>
-
-            <Field label="Marca d'água (texto)">
-              <input
-                className={inputCls}
-                placeholder="@seuperfil"
-                value={preset.watermarkText}
-                onChange={(e) => set("watermarkText", e.target.value)}
-              />
-            </Field>
-
-            <div className="flex flex-wrap gap-4 pt-1">
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={preset.mirror}
-                  onChange={(e) => set("mirror", e.target.checked)}
-                  className="size-4 accent-[var(--primary)]"
-                />
-                Espelhar
-              </label>
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={preset.removeAudio}
-                  onChange={(e) => set("removeAudio", e.target.checked)}
-                  className="size-4 accent-[var(--primary)]"
-                />
-                Remover áudio
-              </label>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="Formato">
-                <select
-                  className={inputCls}
-                  value={preset.outputFormat}
-                  onChange={(e) =>
-                    set("outputFormat", e.target.value as EditorPreset["outputFormat"])
-                  }
-                >
-                  <option value="mp4">MP4</option>
-                  <option value="mov">MOV</option>
-                  <option value="webm">WEBM</option>
-                </select>
-              </Field>
-              <Field label="Pasta de saída">
-                <input
-                  className={inputCls}
-                  value={preset.outputDir}
-                  onChange={(e) => set("outputDir", e.target.value)}
-                />
-              </Field>
-            </div>
-          </section>
-
-          <section className="panel space-y-4 p-6">
-            <h2 className="text-sm font-semibold">Ambiente local</h2>
-            <Field label="Caminho do FFmpeg">
-              <input
-                className={inputCls}
-                value={settings.ffmpegPath}
-                onChange={(e) => setSettings({ ...settings, ffmpegPath: e.target.value })}
-              />
-            </Field>
-            <Field label="Processos simultâneos">
-              <input
-                type="number"
-                min={1}
-                max={8}
-                className={inputCls}
-                value={settings.concurrency}
-                onChange={(e) => setSettings({ ...settings, concurrency: +e.target.value })}
-              />
-            </Field>
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={settings.keepOriginals}
-                onChange={(e) => setSettings({ ...settings, keepOriginals: e.target.checked })}
-                className="size-4 accent-[var(--primary)]"
-              />
-              Manter arquivos originais
-            </label>
-          </section>
-        </aside>
+          )}
+          <Button
+            size="default"
+            onClick={openConfirmation}
+            disabled={queue.length === 0}
+            className="font-semibold shadow-lg gap-2 bg-primary hover:bg-primary/90 text-primary-foreground"
+          >
+            <Sparkles className="size-4" />
+            Processar Vídeos ({queue.length})
+          </Button>
+        </div>
       </div>
+
+      {/* ESTRUTURA PRINCIPAL EM DUAS COLUNAS */}
+      <div className="grid gap-6 lg:grid-cols-[28rem_minmax(0,1fr)] xl:grid-cols-[30rem_minmax(0,1fr)]">
+        {/* COLUNA DA ESQUERDA: Painel de Configuração */}
+        <div className="flex flex-col gap-4 rounded-xl border border-border/80 bg-card p-5 shadow-sm min-h-[640px]">
+          {/* Navegação entre as 2 Abas: Template vs Editor */}
+          <div className="grid grid-cols-2 gap-1 rounded-lg border border-border bg-secondary/30 p-1">
+            <button
+              type="button"
+              onClick={() => setActiveLeftTab("template")}
+              className={`flex items-center justify-center gap-1.5 rounded-md py-2 text-xs font-semibold transition ${
+                activeLeftTab === "template"
+                  ? "bg-primary text-primary-foreground shadow-sm"
+                  : "text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
+              }`}
+            >
+              <Layers className="size-3.5" /> Template
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveLeftTab("editor")}
+              className={`flex items-center justify-center gap-1.5 rounded-md py-2 text-xs font-semibold transition ${
+                activeLeftTab === "editor"
+                  ? "bg-primary text-primary-foreground shadow-sm"
+                  : "text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
+              }`}
+            >
+              <Sliders className="size-3.5" /> Editor ({queue.length})
+            </button>
+          </div>
+
+          {/* Conteúdo da Aba Selecionada */}
+          <div className="flex-1 overflow-y-auto scrollbar-slim pr-1 max-h-[620px]">
+            {activeLeftTab === "template" && (
+              <TemplatePanel
+                template={activeTemplate}
+                onChange={handleUpdateTemplate}
+                onSavePreset={handleSavePreset}
+                savedTemplates={savedTemplates}
+                onLoadPreset={handleLoadPreset}
+                activeSection={
+                  selectedCanvasElement && selectedCanvasElement !== "video"
+                    ? selectedCanvasElement
+                    : "headline"
+                }
+                onSectionChange={(sec) => setSelectedCanvasElement(sec)}
+                onProceedToEditor={() => setActiveLeftTab("editor")}
+              />
+            )}
+
+            {activeLeftTab === "editor" && (
+              <EditorTabPanel
+                queue={queue}
+                selectedIndex={selectedIndex}
+                onSelectIndex={setSelectedIndex}
+                onAddFiles={handleAddFiles}
+                onRemoveItem={handleRemoveItem}
+                onClearQueue={handleClearQueue}
+                onMoveItem={handleMoveItem}
+                disabled={processStatus === "processing"}
+                adjustment={activeAdjustment}
+                onUpdateAdjustment={handleUpdateAdjustment}
+                template={activeTemplate}
+                applyToAll={applyToAll}
+                onToggleApplyToAll={setApplyToAll}
+                onAutoCropToTemplate={handleAutoCropVideoLayer}
+                onApplyCurrentToAll={handleApplyCurrentToAll}
+                onUpdateQueue={setQueue}
+                onDownloadVideo={handleDownloadVideo}
+              />
+            )}
+          </div>
+
+          {/* Rodapé da Coluna Esquerda com Botão de Ação Rápida */}
+          <div className="border-t border-border/60 pt-4 mt-auto">
+            <Button
+              type="button"
+              onClick={openConfirmation}
+              disabled={queue.length === 0}
+              className="w-full font-semibold shadow-md gap-2"
+            >
+              <Sparkles className="size-4" />
+              Processar {queue.length} vídeo{queue.length === 1 ? "" : "s"} em lote
+            </Button>
+          </div>
+        </div>
+
+        {/* COLUNA DA DIREITA: Preview do Vídeo com Canvas 9:16 */}
+        <div className="min-h-[640px]">
+          <VideoCanvasPreview
+            currentVideo={currentVideo}
+            currentIndex={selectedIndex}
+            totalVideos={queue.length}
+            template={activeTemplate}
+            adjustment={activeAdjustment}
+            applyToAll={applyToAll}
+            onToggleApplyToAll={setApplyToAll}
+            onNavigate={setSelectedIndex}
+            onUpdateTemplate={handleUpdateTemplate}
+            onUpdateAdjustment={handleUpdateAdjustment}
+            selectedElement={selectedCanvasElement}
+            onSelectElement={handleSelectCanvasElement}
+            isTemplateLocked={activeLeftTab === "editor"}
+            onRequestEditTemplate={() => setActiveLeftTab("template")}
+          />
+        </div>
+      </div>
+
+      {/* MODAL DE PROCESSAMENTO EM MASSA */}
+      <BatchProcessingModal
+        open={isProcessModalOpen}
+        onOpenChange={setIsProcessModalOpen}
+        status={processStatus}
+        totalVideos={queue.length}
+        processedCount={successCount}
+        errorCount={errorCount}
+        currentVideoName={currentProcessingName}
+        currentVideoProgress={currentVideoProgress}
+        overallProgress={overallProgress}
+        templateName={globalTemplate.name}
+        zipBlob={zipBlob}
+        queue={queue}
+        startTime={batchStartTime}
+        endTime={batchEndTime}
+        concurrency={batchConcurrency}
+        onConcurrencyChange={setBatchConcurrency}
+        onDownloadVideo={handleDownloadVideo}
+        onConfirmStart={startProcessingQueue}
+        onCancelProcessing={handleCancelProcessing}
+        onRetryFailed={handleRetryFailed}
+        onClearTempFiles={handleClearTempFiles}
+      />
     </div>
   );
 }
