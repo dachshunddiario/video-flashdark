@@ -23,6 +23,27 @@ import {
   saveSupabaseConfig,
   getSupabaseConfig,
 } from "./lib/supabase";
+import {
+  getAllAgendamentos,
+  getAgendamentoById,
+  upsertAgendamento,
+  deleteAgendamento,
+  AGENDAMENTOS_SUPABASE_SQL,
+} from "./lib/agendamentos-db";
+import {
+  publishSingleAgendamento,
+  runAgendamentosWorker,
+} from "./lib/meta-publisher";
+import {
+  getSavedMetaConfig,
+  saveMetaConfig,
+  getAllMetaConnections,
+  saveMetaConnection,
+  deleteMetaConnection,
+  findConnectionForAccountId,
+  getMetaConnectionById,
+} from "./lib/meta-config-store";
+import { type MetaConnection } from "./lib/types";
 
 type ServerEntry = {
   fetch: (request: Request, env: unknown, ctx: unknown) => Promise<Response> | Response;
@@ -1445,9 +1466,676 @@ function isH3SwallowedErrorBody(body: string): boolean {
   }
 }
 
-// Inicializa o agendador em background (Cron diário às 23:59 na tabela Historico_Seguidores)
+const UPLOADS_DIR = path.resolve(process.cwd(), "public", "uploads");
+
+function getUploadMimeType(filePath: string): string {
+  const ext = path.extname(filePath).toLowerCase();
+  switch (ext) {
+    case ".jpg":
+    case ".jpeg":
+      return "image/jpeg";
+    case ".png":
+      return "image/png";
+    case ".webp":
+      return "image/webp";
+    case ".gif":
+      return "image/gif";
+    case ".mp4":
+      return "video/mp4";
+    case ".mov":
+      return "video/quicktime";
+    case ".webm":
+      return "video/webm";
+    default:
+      return "application/octet-stream";
+  }
+}
+
+async function handleUploadsStatic(request: Request): Promise<Response> {
+  const url = new URL(request.url);
+  const fileName = path.basename(url.pathname);
+  const filePath = path.join(UPLOADS_DIR, fileName);
+
+  try {
+    if (!fsSync.existsSync(filePath)) {
+      return new Response("Arquivo não encontrado", { status: 404 });
+    }
+    const stat = await fs.stat(filePath);
+    const mime = getUploadMimeType(filePath);
+    const data = await fs.readFile(filePath);
+
+    return new Response(data, {
+      status: 200,
+      headers: {
+        "Content-Type": mime,
+        "Content-Length": stat.size.toString(),
+        "Cache-Control": "public, max-age=31536000, immutable",
+      },
+    });
+  } catch (err: any) {
+    return new Response("Erro ao ler arquivo", { status: 500 });
+  }
+}
+
+/**
+ * Roteamento da API de Agendador Flash (/api/agendamentos).
+ */
+async function handleAgendamentosApi(request: Request): Promise<Response> {
+  const url = new URL(request.url);
+  const pathname = url.pathname;
+
+  // 1. GET /api/agendamentos — Lista todos os registros
+  if (request.method === "GET" && pathname === "/api/agendamentos") {
+    try {
+      const records = await getAllAgendamentos();
+      return new Response(JSON.stringify({ success: true, data: records }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    } catch (err: any) {
+      return new Response(
+        JSON.stringify({ success: false, message: err.message }),
+        { status: 500, headers: { "Content-Type": "application/json" } },
+      );
+    }
+  }
+
+  // 2. POST /api/agendamentos — Salva ou edita agendamento
+  if (request.method === "POST" && pathname === "/api/agendamentos") {
+    try {
+      const body = await request.json();
+      const saved = await upsertAgendamento(body);
+      return new Response(JSON.stringify({ success: true, data: saved }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    } catch (err: any) {
+      return new Response(
+        JSON.stringify({ success: false, message: err.message }),
+        { status: 400, headers: { "Content-Type": "application/json" } },
+      );
+    }
+  }
+
+  // 3. DELETE /api/agendamentos — Remove agendamento
+  if (
+    (request.method === "DELETE" && pathname === "/api/agendamentos") ||
+    (request.method === "POST" && pathname === "/api/agendamentos/delete")
+  ) {
+    try {
+      let id = url.searchParams.get("id") || "";
+      if (!id && request.method === "POST") {
+        const body = (await request.json().catch(() => ({}))) as any;
+        if (body.id) id = body.id;
+      }
+      if (!id) {
+        return new Response(
+          JSON.stringify({ success: false, message: "ID do agendamento é obrigatório." }),
+          { status: 400, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      const deleted = await deleteAgendamento(id);
+      return new Response(JSON.stringify({ success: deleted }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    } catch (err: any) {
+      return new Response(
+        JSON.stringify({ success: false, message: err.message }),
+        { status: 500, headers: { "Content-Type": "application/json" } },
+      );
+    }
+  }
+
+  // 4. POST /api/agendamentos/upload — Upload de mídia para storage público local
+  if (request.method === "POST" && pathname === "/api/agendamentos/upload") {
+    try {
+      await fs.mkdir(UPLOADS_DIR, { recursive: true });
+      const formData = await request.formData();
+      const file = formData.get("file");
+
+      if (!file || typeof file === "string") {
+        return new Response(
+          JSON.stringify({ success: false, message: "Nenhum arquivo enviado no campo 'file'." }),
+          { status: 400, headers: { "Content-Type": "application/json" } },
+        );
+      }
+
+      const fileObj = file as File;
+      const originalName = fileObj.name || "upload";
+      const ext = path.extname(originalName) || (fileObj.type.includes("video") ? ".mp4" : ".jpg");
+      const safeBase = path.basename(originalName, ext).replace(/[^a-zA-Z0-9_-]/g, "_");
+      const fileName = `${Date.now()}_${safeBase}${ext}`;
+      const targetPath = path.join(UPLOADS_DIR, fileName);
+
+      const arrayBuffer = await fileObj.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      await fs.writeFile(targetPath, buffer);
+
+      const publicPath = `/uploads/${fileName}`;
+      let fullUrl = `${url.origin}${publicPath}`;
+
+      // Espelha para CDN pública para que os servidores da Meta Graph API possam acessar a mídia
+      try {
+        const cdnFormData = new FormData();
+        cdnFormData.append("reqtype", "fileupload");
+        const blob = new Blob([buffer], { type: fileObj.type || "image/jpeg" });
+        cdnFormData.append("fileToUpload", blob, fileName);
+        const cdnRes = await fetch("https://catbox.moe/user/api.php", {
+          method: "POST",
+          body: cdnFormData,
+        });
+        if (cdnRes.ok) {
+          const directCdnUrl = (await cdnRes.text()).trim();
+          if (directCdnUrl.startsWith("http")) {
+            fullUrl = directCdnUrl;
+            console.log(`[AgendadorFlash] Upload espelhado para CDN pública: ${fullUrl}`);
+          }
+        }
+      } catch (cdnErr) {
+        console.warn("[AgendadorFlash] Aviso ao enviar para CDN pública:", cdnErr);
+      }
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          url: publicPath,
+          fullUrl,
+          fileName,
+          size: buffer.length,
+          type: fileObj.type,
+        }),
+        { headers: { "Content-Type": "application/json" } },
+      );
+    } catch (err: any) {
+      console.error("[AgendadorFlash] Erro no upload de mídia:", err);
+      return new Response(
+        JSON.stringify({ success: false, message: err.message || "Erro no upload." }),
+        { status: 500, headers: { "Content-Type": "application/json" } },
+      );
+    }
+  }
+
+  // 5. POST /api/agendamentos/publish-now — Disparo imediato oficial Meta API v22.0
+  if (request.method === "POST" && pathname === "/api/agendamentos/publish-now") {
+    try {
+      const body = (await request.json()) as any;
+      let agendamentoId = body.id;
+
+      // Se passou dados para criação rápida + disparo imediato
+      if (!agendamentoId && body.media_url && body.media_type) {
+        const created = await upsertAgendamento({
+          media_type: body.media_type,
+          media_url: body.media_url,
+          caption: body.caption || "",
+          scheduled_time: new Date().toISOString(),
+          status: "PUBLICANDO",
+          destination_platform: body.destination_platform || "INSTAGRAM",
+          instagram_account_id: body.instagram_account_id || null,
+          target_username: body.target_username || null,
+          facebook_page_id: body.facebook_page_id || null,
+          facebook_page_name: body.facebook_page_name || null,
+          connection_id: body.connection_id || null,
+        });
+        agendamentoId = created.id;
+      }
+
+      if (!agendamentoId) {
+        return new Response(
+          JSON.stringify({ success: false, message: "ID do agendamento não fornecido." }),
+          { status: 400, headers: { "Content-Type": "application/json" } },
+        );
+      }
+
+      // Credenciais Meta: passadas no body ou recuperadas da conexão específica / config permanente
+      let resolvedToken = body.metaConfig?.accessToken || body.accessToken || "";
+      if (!resolvedToken && body.connection_id) {
+        const conn = await getMetaConnectionById(body.connection_id);
+        if (conn?.accessToken) resolvedToken = conn.accessToken;
+      }
+      if (!resolvedToken) {
+        const savedConfig = await getSavedMetaConfig();
+        resolvedToken = savedConfig?.accessToken || "";
+      }
+
+      const credentials = {
+        accessToken: resolvedToken,
+        instagramAccountId:
+          body.instagram_account_id ||
+          body.metaConfig?.instagramAccountId ||
+          body.instagramAccountId ||
+          "",
+      };
+
+      const dest = body.destination_platform || "INSTAGRAM";
+      if (!credentials.accessToken) {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            message: "Access Token da Meta não configurado. Adicione suas credenciais no painel.",
+          }),
+          { status: 400, headers: { "Content-Type": "application/json" } },
+        );
+      }
+
+      if (dest !== "FACEBOOK" && !credentials.instagramAccountId) {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            message:
+              "Instagram Business Account ID não configurado para publicação no Instagram.",
+          }),
+          { status: 400, headers: { "Content-Type": "application/json" } },
+        );
+      }
+
+      const result = await publishSingleAgendamento(agendamentoId, credentials);
+      const updatedItem = await getAgendamentoById(agendamentoId);
+
+      return new Response(
+        JSON.stringify({
+          success: result.success,
+          result,
+          item: updatedItem,
+        }),
+        { headers: { "Content-Type": "application/json" } },
+      );
+    } catch (err: any) {
+      console.error("[AgendadorFlash] Erro ao disparar publicação imediata:", err);
+      return new Response(
+        JSON.stringify({ success: false, message: err.message || "Erro ao publicar." }),
+        { status: 500, headers: { "Content-Type": "application/json" } },
+      );
+    }
+  }
+
+  // 6. POST /api/agendamentos/cron-run — Dispara o Worker manualmente
+  if (request.method === "POST" && pathname === "/api/agendamentos/cron-run") {
+    try {
+      const body = (await request.json().catch(() => ({}))) as any;
+      const savedConfig = await getSavedMetaConfig();
+      const credentials = {
+        accessToken: body.accessToken || savedConfig?.accessToken || "",
+        instagramAccountId:
+          body.instagramAccountId || savedConfig?.instagramAccountId || "",
+      };
+
+      if (!credentials.accessToken || !credentials.instagramAccountId) {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            message: "Credenciais da Meta não configuradas para o Worker.",
+          }),
+          { status: 400, headers: { "Content-Type": "application/json" } },
+        );
+      }
+
+      const workerRes = await runAgendamentosWorker(credentials);
+      return new Response(JSON.stringify({ success: true, result: workerRes }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    } catch (err: any) {
+      return new Response(
+        JSON.stringify({ success: false, message: err.message }),
+        { status: 500, headers: { "Content-Type": "application/json" } },
+      );
+    }
+  }
+
+  // 7. GET /api/agendamentos/sql — Retorna o script SQL para criação no Supabase
+  if (request.method === "GET" && pathname === "/api/agendamentos/sql") {
+    return new Response(
+      JSON.stringify({
+        success: true,
+        sql: AGENDAMENTOS_SUPABASE_SQL,
+      }),
+      { headers: { "Content-Type": "application/json" } },
+    );
+  }
+
+  // 8. GET ou POST /api/agendamentos/meta-config — Salva credenciais permanentes server-side
+  if (pathname === "/api/agendamentos/meta-config") {
+    if (request.method === "POST") {
+      try {
+        const body = (await request.json()) as any;
+        const saved = await saveMetaConfig(body);
+        return new Response(JSON.stringify({ success: true, config: saved }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      } catch (err: any) {
+        return new Response(
+          JSON.stringify({ success: false, message: err.message }),
+          { status: 500, headers: { "Content-Type": "application/json" } },
+        );
+      }
+    } else {
+      const config = await getSavedMetaConfig();
+      return new Response(JSON.stringify({ success: true, config }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+  }
+
+  // 8.1. GET /api/agendamentos/meta-connections — Lista conexões cadastradas
+  if (pathname === "/api/agendamentos/meta-connections" && request.method === "GET") {
+    try {
+      const connections = await getAllMetaConnections();
+      return new Response(JSON.stringify({ success: true, connections }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    } catch (err: any) {
+      return new Response(
+        JSON.stringify({ success: false, message: err.message, connections: [] }),
+        { status: 500, headers: { "Content-Type": "application/json" } },
+      );
+    }
+  }
+
+  // 8.2. POST /api/agendamentos/meta-connections — Adiciona ou edita conexão Meta
+  if (pathname === "/api/agendamentos/meta-connections" && request.method === "POST") {
+    try {
+      const body = (await request.json().catch(() => ({}))) as any;
+      if (!body.accessToken || !body.accessToken.trim()) {
+        return new Response(
+          JSON.stringify({ success: false, message: "Token de acesso é obrigatório." }),
+          { status: 400, headers: { "Content-Type": "application/json" } },
+        );
+      }
+
+      const rawToken = body.accessToken.trim();
+      const label = body.label?.trim() || `Conexão Meta ${Date.now()}`;
+      const connId = body.id || `conn_${Date.now()}`;
+
+      // Valida permissões e recupera app info da Meta Graph API
+      let appId: string | null = null;
+      let appName: string | null = null;
+      let hasPublish = false;
+      try {
+        const debugRes = await fetch(
+          `https://graph.facebook.com/debug_token?input_token=${encodeURIComponent(rawToken)}&access_token=${encodeURIComponent(rawToken)}`,
+        ).catch(() => null);
+        if (debugRes && debugRes.ok) {
+          const debugJson = await debugRes.json();
+          appId = debugJson.data?.app_id || null;
+          appName = debugJson.data?.application || null;
+          const scopes = debugJson.data?.scopes || [];
+          hasPublish = scopes.includes("instagram_content_publish");
+        }
+      } catch {
+        // segue
+      }
+
+      const newConn: MetaConnection = {
+        id: connId,
+        label,
+        accessToken: rawToken,
+        connectedAt: new Date().toISOString(),
+        appId,
+        appName,
+        hasPublishPermission: hasPublish,
+      };
+
+      const updatedList = await saveMetaConnection(newConn);
+      return new Response(
+        JSON.stringify({ success: true, connection: newConn, connections: updatedList }),
+        { headers: { "Content-Type": "application/json" } },
+      );
+    } catch (err: any) {
+      return new Response(
+        JSON.stringify({ success: false, message: err.message }),
+        { status: 500, headers: { "Content-Type": "application/json" } },
+      );
+    }
+  }
+
+  // 8.3. DELETE /api/agendamentos/meta-connections — Remove conexão
+  if (
+    pathname === "/api/agendamentos/meta-connections" &&
+    (request.method === "DELETE" || (request.method === "POST" && url.searchParams.get("action") === "delete"))
+  ) {
+    try {
+      const id = url.searchParams.get("id");
+      if (!id) {
+        return new Response(
+          JSON.stringify({ success: false, message: "ID da conexão não fornecido." }),
+          { status: 400, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      const remaining = await deleteMetaConnection(id);
+      return new Response(JSON.stringify({ success: true, connections: remaining }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    } catch (err: any) {
+      return new Response(
+        JSON.stringify({ success: false, message: err.message }),
+        { status: 500, headers: { "Content-Type": "application/json" } },
+      );
+    }
+  }
+
+  // 9. GET ou POST /api/agendamentos/accounts — Lista todas as contas Instagram vinculadas e Páginas do Facebook
+  if (pathname === "/api/agendamentos/accounts") {
+    try {
+      let explicitToken = url.searchParams.get("accessToken") || "";
+      if (request.method === "POST") {
+        const body = (await request.json().catch(() => ({}))) as any;
+        if (body.accessToken) explicitToken = body.accessToken;
+      }
+
+      const accounts: Array<{
+        id: string;
+        username: string;
+        name: string;
+        profilePictureUrl: string | null;
+        followersCount: number | null;
+        pageName: string;
+        pageId: string;
+        pageAccessToken: string | null;
+        hasInstagram?: boolean;
+        hasFacebook?: boolean;
+        connectionId?: string | null;
+        connectionLabel?: string | null;
+      }> = [];
+
+      const parsePagesData = (data: any, connId?: string | null, connLabel?: string | null) => {
+        if (!data || !Array.isArray(data.data)) return;
+        for (const page of data.data) {
+          const ig = page.instagram_business_account || page.connected_instagram_account;
+          if (ig) {
+            if (!accounts.some((a) => a.id === ig.id)) {
+              accounts.push({
+                id: ig.id,
+                username: ig.username,
+                name: ig.name || page.name,
+                profilePictureUrl: ig.profile_picture_url || null,
+                followersCount: ig.followers_count ?? null,
+                pageName: page.name,
+                pageId: page.id,
+                pageAccessToken: page.access_token || null,
+                hasInstagram: true,
+                hasFacebook: true,
+                connectionId: connId || null,
+                connectionLabel: connLabel || null,
+              });
+            }
+          } else {
+            // Página do Facebook sem conta do Instagram vinculada
+            const fbVirtualId = `fb_${page.id}`;
+            if (!accounts.some((a) => a.id === fbVirtualId || a.pageId === page.id)) {
+              accounts.push({
+                id: fbVirtualId,
+                username: page.name,
+                name: page.name,
+                profilePictureUrl: null,
+                followersCount: null,
+                pageName: page.name,
+                pageId: page.id,
+                pageAccessToken: page.access_token || null,
+                hasInstagram: false,
+                hasFacebook: true,
+                connectionId: connId || null,
+                connectionLabel: connLabel || null,
+              });
+            }
+          }
+        }
+      };
+
+      // Se passou um token específico, busca somente dele
+      if (explicitToken) {
+        const accountsUrl = `https://graph.facebook.com/v22.0/me/accounts?fields=id,name,access_token,instagram_business_account{id,username,name,biography,profile_picture_url,followers_count,media_count},connected_instagram_account{id,username,name,biography,profile_picture_url,followers_count,media_count}&access_token=${encodeURIComponent(explicitToken)}`;
+        const res = await fetch(accountsUrl);
+        const data = (await res.json()) as any;
+        if (res.ok) {
+          parsePagesData(data);
+        }
+      } else {
+        // Multi-Conexões: consulta cada conexão Meta configurada
+        const connections = await getAllMetaConnections();
+
+        if (connections.length === 0) {
+          const saved = await getSavedMetaConfig();
+          if (saved?.accessToken) {
+            connections.push({
+              id: "conn_default",
+              label: "Conexão Principal",
+              accessToken: saved.accessToken,
+              connectedAt: saved.updatedAt || new Date().toISOString(),
+            });
+          }
+        }
+
+        for (const conn of connections) {
+          try {
+            const accountsUrl = `https://graph.facebook.com/v22.0/me/accounts?fields=id,name,access_token,instagram_business_account{id,username,name,biography,profile_picture_url,followers_count,media_count},connected_instagram_account{id,username,name,biography,profile_picture_url,followers_count,media_count}&access_token=${encodeURIComponent(conn.accessToken)}`;
+            const res = await fetch(accountsUrl);
+            const data = (await res.json()) as any;
+
+            if (res.ok) {
+              parsePagesData(data, conn.id, conn.label);
+            } else if (data?.error?.code === 190) {
+              // Token expirou nesta conexão, tenta fallback com config principal se diferente
+              const saved = await getSavedMetaConfig();
+              if (saved?.accessToken && saved.accessToken !== conn.accessToken) {
+                const fbUrl = `https://graph.facebook.com/v22.0/me/accounts?fields=id,name,access_token,instagram_business_account{id,username,name,biography,profile_picture_url,followers_count,media_count},connected_instagram_account{id,username,name,biography,profile_picture_url,followers_count,media_count}&access_token=${encodeURIComponent(saved.accessToken)}`;
+                const fbRes = await fetch(fbUrl);
+                const fbData = (await fbRes.json()) as any;
+                if (fbRes.ok) {
+                  parsePagesData(fbData, conn.id, conn.label);
+                }
+              }
+            }
+          } catch (connErr) {
+            console.warn(`[AgendadorFlash] Erro ao carregar contas da conexão '${conn.label}':`, connErr);
+          }
+        }
+      }
+
+      return new Response(JSON.stringify({ success: true, accounts }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    } catch (err: any) {
+      return new Response(
+        JSON.stringify({ success: false, message: err.message, accounts: [] }),
+        { status: 500, headers: { "Content-Type": "application/json" } },
+      );
+    }
+  }
+
+  // 10. GET ou POST /api/agendamentos/meta-permissions — Valida permissões do token na Meta API
+  if (pathname === "/api/agendamentos/meta-permissions") {
+    try {
+      let accessToken = url.searchParams.get("accessToken") || "";
+      if (request.method === "POST") {
+        const body = (await request.json().catch(() => ({}))) as any;
+        if (body.accessToken) accessToken = body.accessToken;
+      }
+      if (!accessToken) {
+        const saved = await getSavedMetaConfig();
+        if (saved?.accessToken) accessToken = saved.accessToken;
+      }
+
+      if (!accessToken) {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            isValid: false,
+            hasPublishPermission: false,
+            hasInstagramPublish: false,
+            hasFacebookPublish: false,
+            grantedPermissions: [],
+            missingPermissions: ["instagram_content_publish", "pages_manage_posts", "instagram_basic", "pages_show_list"],
+            message: "Token não configurado.",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+
+      // Consulta /me/permissions e debug_token em paralelo
+      const [permRes, debugRes] = await Promise.all([
+        fetch(`https://graph.facebook.com/v22.0/me/permissions?access_token=${encodeURIComponent(accessToken)}`).catch(() => null),
+        fetch(`https://graph.facebook.com/debug_token?input_token=${encodeURIComponent(accessToken)}&access_token=${encodeURIComponent(accessToken)}`).catch(() => null),
+      ]);
+
+      const permData = permRes ? await permRes.json().catch(() => ({})) : {};
+      const debugData = debugRes ? await debugRes.json().catch(() => ({})) : {};
+
+      const granted: string[] = [];
+      if (Array.isArray(permData?.data)) {
+        for (const p of permData.data) {
+          if (p.status === "granted") granted.push(p.permission);
+        }
+      }
+      if (Array.isArray(debugData?.data?.scopes)) {
+        for (const s of debugData.data.scopes) {
+          if (!granted.includes(s)) granted.push(s);
+        }
+      }
+
+      const hasIgPublish = granted.includes("instagram_content_publish");
+      const hasFbPublish = granted.includes("pages_manage_posts");
+      const hasPublish = hasIgPublish || hasFbPublish;
+
+      const requiredScopes = ["instagram_basic", "instagram_content_publish", "pages_show_list"];
+      const missing = requiredScopes.filter((s) => !granted.includes(s));
+      const isValid = debugData?.data?.is_valid ?? permRes?.ok ?? false;
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          isValid,
+          hasPublishPermission: hasPublish,
+          hasInstagramPublish: hasIgPublish,
+          hasFacebookPublish: hasFbPublish,
+          appId: debugData?.data?.app_id || "1437178635181870",
+          appName: debugData?.data?.application || "Flash Dark",
+          tokenType: debugData?.data?.type || "USER",
+          grantedPermissions: granted,
+          missingPermissions: missing,
+          expiresAt: debugData?.data?.expires_at ?? null,
+        }),
+        { headers: { "Content-Type": "application/json" } },
+      );
+    } catch (err: any) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          isValid: false,
+          hasPublishPermission: false,
+          grantedPermissions: [],
+          missingPermissions: [],
+          message: err.message,
+        }),
+        { status: 500, headers: { "Content-Type": "application/json" } },
+      );
+    }
+  }
+
+  return new Response("Not found", { status: 404 });
+}
+
+
+// Inicializa o agendador em background (Cron a cada 60s)
 let lastServerCronDate = "";
 setInterval(async () => {
+  // 1. Cron diário às 23:59 na tabela Historico_Seguidores
   try {
     const now = new Date();
     const hours = now.getHours();
@@ -1463,11 +2151,39 @@ setInterval(async () => {
   } catch (err) {
     console.error(`[Anti Gravity Cron] Erro ao rodar rotina diária:`, err);
   }
+
+  // 2. Worker Agendador Flash: verifica publicações com status == 'AGENDADO' e scheduled_time <= agora
+  try {
+    const metaConfig = await getSavedMetaConfig();
+    if (metaConfig && metaConfig.accessToken && metaConfig.instagramAccountId) {
+      const workerRes = await runAgendamentosWorker(metaConfig);
+      if (workerRes.publishedCount > 0 || workerRes.failedCount > 0) {
+        console.log(
+          `[AgendadorFlash Worker] Ciclo concluído: ${workerRes.publishedCount} publicado(s), ${workerRes.failedCount} falha(s).`,
+        );
+      }
+    }
+  } catch (agendadorErr) {
+    console.error(`[AgendadorFlash Worker] Erro no ciclo de agendamentos:`, agendadorErr);
+  }
 }, 60 * 1000);
 
 export default {
   async fetch(request: Request, env: unknown, ctx: unknown) {
     const url = new URL(request.url);
+
+    // Intercepta requisições para o Agendador Flash de Publicações
+    if (
+      url.pathname === "/api/agendamentos" ||
+      url.pathname.startsWith("/api/agendamentos/")
+    ) {
+      return handleAgendamentosApi(request);
+    }
+
+    // Intercepta requisições estáticas para mídias em /uploads/
+    if (url.pathname.startsWith("/uploads/")) {
+      return handleUploadsStatic(request);
+    }
 
     // Intercepta requisições para a API Social e API do Supabase
     if (url.pathname.startsWith("/api/social/") || url.pathname.startsWith("/api/supabase/")) {
@@ -1497,3 +2213,4 @@ export default {
     }
   },
 };
+

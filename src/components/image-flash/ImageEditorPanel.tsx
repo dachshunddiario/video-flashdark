@@ -5,6 +5,9 @@ import {
   type InstagramImageFormat,
   INSTAGRAM_IMAGE_FORMATS,
   type FilterType,
+  type ImageCropConfig,
+  type ImageLayerOrder,
+  DEFAULT_IMAGE_CROP,
 } from "@/lib/types";
 import {
   Image as ImageIcon,
@@ -19,10 +22,15 @@ import {
   Layers,
   Crop,
   Maximize2,
+  Scissors,
+  MoveVertical,
+  MoveHorizontal,
+  RotateCcw,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
+import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
 
 interface ImageEditorPanelProps {
@@ -34,6 +42,8 @@ interface ImageEditorPanelProps {
   onClearQueue: () => void;
   adjustment: ImageFlashAdjustment;
   onUpdateAdjustment: (adj: ImageFlashAdjustment) => void;
+  onUpdateItemCrop?: (crop: ImageCropConfig, applyToAll: boolean) => void;
+  onOpenCropModal?: () => void;
   onExportAll: () => void;
   onExportCurrent: () => void;
   isProcessing: boolean;
@@ -64,6 +74,8 @@ export function ImageEditorPanel({
   onClearQueue,
   adjustment,
   onUpdateAdjustment,
+  onUpdateItemCrop,
+  onOpenCropModal,
   onExportAll,
   onExportCurrent,
   isProcessing,
@@ -218,6 +230,195 @@ export function ImageEditorPanel({
 
       {/* 3. CONTROLES DE ENQUADRAMENTO DA IMAGEM ATUAL */}
       <div className="flex-1 overflow-y-auto pr-1 space-y-3.5">
+        {/* SEÇÃO DE RECORTE MANUAL & SELEÇÃO DE ÁREA */}
+        <div className="rounded-xl border border-border/80 bg-secondary/25 p-3 space-y-3">
+          <div className="flex items-center justify-between">
+            <Label className="text-xs font-semibold flex items-center gap-1.5 text-foreground">
+              <Scissors className="size-3.5 text-primary" /> Recorte Manual da Imagem
+            </Label>
+            <div className="flex items-center gap-1.5">
+              <Switch
+                checked={(currentItem?.crop ?? adjustment.crop ?? DEFAULT_IMAGE_CROP).enabled}
+                onCheckedChange={(checked) => {
+                  const current = currentItem?.crop ?? adjustment.crop ?? DEFAULT_IMAGE_CROP;
+                  const updated = { ...current, enabled: checked };
+                  if (onUpdateItemCrop) onUpdateItemCrop(updated, false);
+                  else onUpdateAdjustment({ ...adjustment, crop: updated });
+                }}
+                id="panel-crop-switch"
+              />
+              <span className="text-[10px] text-muted-foreground font-mono">
+                {(currentItem?.crop ?? adjustment.crop ?? DEFAULT_IMAGE_CROP).enabled ? "Ativo" : "Off"}
+              </span>
+            </div>
+          </div>
+
+          {/* Botão em destaque para abrir o Modal Visual */}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={onOpenCropModal}
+            disabled={!currentItem}
+            className="w-full h-8 text-xs font-semibold border-primary/40 bg-primary/10 hover:bg-primary/20 text-primary flex items-center justify-center gap-1.5"
+          >
+            <Crop className="size-3.5" /> Abrir Recortador Visual Interativo
+          </Button>
+
+          {/* Sliders rápidos de recorte no próprio painel */}
+          {(currentItem?.crop ?? adjustment.crop ?? DEFAULT_IMAGE_CROP).enabled && (
+            <div className="space-y-2.5 pt-1 border-t border-border/60">
+              {/* Presets Rápidos */}
+              <div className="grid grid-cols-4 gap-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const updated = { top: 32, bottom: 0, left: 0, right: 0, enabled: true };
+                    if (onUpdateItemCrop) onUpdateItemCrop(updated, false);
+                    else onUpdateAdjustment({ ...adjustment, crop: updated });
+                  }}
+                  className="rounded py-1 text-[10px] font-medium bg-secondary/50 hover:bg-secondary text-foreground text-center"
+                  title="Corta 32% do topo (remove tweet/pergunta)"
+                >
+                  Tirar Tweet
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const updated = { top: 0, bottom: 18, left: 0, right: 0, enabled: true };
+                    if (onUpdateItemCrop) onUpdateItemCrop(updated, false);
+                    else onUpdateAdjustment({ ...adjustment, crop: updated });
+                  }}
+                  className="rounded py-1 text-[10px] font-medium bg-secondary/50 hover:bg-secondary text-foreground text-center"
+                  title="Corta 18% da base (remove marca/botões)"
+                >
+                  Tirar Base
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const updated = { top: 28, bottom: 16, left: 0, right: 0, enabled: true };
+                    if (onUpdateItemCrop) onUpdateItemCrop(updated, false);
+                    else onUpdateAdjustment({ ...adjustment, crop: updated });
+                  }}
+                  className="rounded py-1 text-[10px] font-medium bg-secondary/50 hover:bg-secondary text-foreground text-center"
+                  title="Corta topo e base"
+                >
+                  Foto Central
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const updated = { top: 0, bottom: 0, left: 0, right: 0, enabled: false };
+                    if (onUpdateItemCrop) onUpdateItemCrop(updated, false);
+                    else onUpdateAdjustment({ ...adjustment, crop: updated });
+                  }}
+                  className="rounded py-1 text-[10px] font-medium bg-secondary/50 hover:bg-destructive/20 hover:text-destructive text-muted-foreground text-center"
+                >
+                  Resetar
+                </button>
+              </div>
+
+              {/* Slider Cortar Topo */}
+              <div className="space-y-1">
+                <div className="flex items-center justify-between text-[10px]">
+                  <span className="text-muted-foreground flex items-center gap-1">
+                    <MoveVertical className="size-3 text-primary" /> Cortar Topo (remover texto)
+                  </span>
+                  <span className="font-mono font-semibold text-primary">
+                    {(currentItem?.crop ?? adjustment.crop ?? DEFAULT_IMAGE_CROP).top}%
+                  </span>
+                </div>
+                <Slider
+                  min={0}
+                  max={80}
+                  step={1}
+                  value={[(currentItem?.crop ?? adjustment.crop ?? DEFAULT_IMAGE_CROP).top]}
+                  onValueChange={([val]) => {
+                    const current = currentItem?.crop ?? adjustment.crop ?? DEFAULT_IMAGE_CROP;
+                    const updated = { ...current, enabled: true, top: val ?? 0 };
+                    if (onUpdateItemCrop) onUpdateItemCrop(updated, false);
+                    else onUpdateAdjustment({ ...adjustment, crop: updated });
+                  }}
+                />
+              </div>
+
+              {/* Slider Cortar Base */}
+              <div className="space-y-1">
+                <div className="flex items-center justify-between text-[10px]">
+                  <span className="text-muted-foreground flex items-center gap-1">
+                    <MoveVertical className="size-3 text-primary" /> Cortar Base / Rodapé
+                  </span>
+                  <span className="font-mono font-semibold text-primary">
+                    {(currentItem?.crop ?? adjustment.crop ?? DEFAULT_IMAGE_CROP).bottom}%
+                  </span>
+                </div>
+                <Slider
+                  min={0}
+                  max={80}
+                  step={1}
+                  value={[(currentItem?.crop ?? adjustment.crop ?? DEFAULT_IMAGE_CROP).bottom]}
+                  onValueChange={([val]) => {
+                    const current = currentItem?.crop ?? adjustment.crop ?? DEFAULT_IMAGE_CROP;
+                    const updated = { ...current, enabled: true, bottom: val ?? 0 };
+                    if (onUpdateItemCrop) onUpdateItemCrop(updated, false);
+                    else onUpdateAdjustment({ ...adjustment, crop: updated });
+                  }}
+                />
+              </div>
+
+              {queue.length > 1 && onUpdateItemCrop && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const current = currentItem?.crop ?? adjustment.crop ?? DEFAULT_IMAGE_CROP;
+                    onUpdateItemCrop(current, true);
+                  }}
+                  className="w-full text-center py-1 text-[10px] font-medium text-muted-foreground hover:text-primary transition flex items-center justify-center gap-1 border-t border-border/40 pt-1.5"
+                >
+                  <Layers className="size-3" /> Aplicar este recorte a todas da fila ({queue.length})
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Opção de Sobrepor a Imagem ao Template */}
+          <div className="pt-2 border-t border-border/60">
+            <span className="text-[10px] text-muted-foreground block mb-1">
+              Camada de Sobreposição do Template
+            </span>
+            <div className="grid grid-cols-2 gap-1.5">
+              <button
+                type="button"
+                onClick={() => onUpdateAdjustment({ ...adjustment, layerOrder: "behind" })}
+                className={`py-1 px-2.5 rounded-lg text-[11px] font-medium transition ${
+                  (adjustment.layerOrder ?? "behind") === "behind"
+                    ? "bg-primary text-primary-foreground font-semibold shadow-xs"
+                    : "bg-secondary/40 text-muted-foreground hover:bg-secondary/70"
+                }`}
+              >
+                Normal (Fundo)
+              </button>
+              <button
+                type="button"
+                onClick={() => onUpdateAdjustment({ ...adjustment, layerOrder: "overlay" })}
+                className={`py-1 px-2.5 rounded-lg text-[11px] font-medium transition ${
+                  adjustment.layerOrder === "overlay"
+                    ? "bg-primary text-primary-foreground font-semibold shadow-xs"
+                    : "bg-secondary/40 text-muted-foreground hover:bg-secondary/70"
+                }`}
+              >
+                Sobrepor ao Post (Frente)
+              </button>
+            </div>
+            <p className="text-[9px] text-muted-foreground mt-1">
+              {adjustment.layerOrder === "overlay"
+                ? "A imagem recortada fica na frente do template como elemento de destaque."
+                : "Os textos e títulos do template ficam sobrepostos à imagem."}
+            </p>
+          </div>
+        </div>
+
         {/* Enquadramento & Posição */}
         <div className="rounded-xl border border-border/80 bg-secondary/20 p-3 space-y-3">
           <Label className="text-xs font-semibold flex items-center gap-1.5 text-foreground">
@@ -327,6 +528,24 @@ export function ImageEditorPanel({
             />
           </div>
 
+          {/* Posição Horizontal X */}
+          <div className="space-y-1">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] text-muted-foreground">
+                Posição Horizontal X ({adjustment.imageX ?? 50}%)
+              </span>
+            </div>
+            <Slider
+              min={20}
+              max={80}
+              step={1}
+              value={[adjustment.imageX ?? 50]}
+              onValueChange={([val]) =>
+                onUpdateAdjustment({ ...adjustment, imageX: val ?? 50 })
+              }
+            />
+          </div>
+
           {/* Posição Vertical Y */}
           <div className="space-y-1">
             <div className="flex items-center justify-between">
@@ -335,8 +554,8 @@ export function ImageEditorPanel({
               </span>
             </div>
             <Slider
-              min={30}
-              max={80}
+              min={20}
+              max={85}
               step={1}
               value={[adjustment.imageY ?? 56]}
               onValueChange={([val]) =>

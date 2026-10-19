@@ -40,3 +40,10 @@ __pycache__/
 .env
 .env*.local
 
+# Local Data and Credentials
+data/*.tmp.*
+data/meta_config.json
+data/agendamentos_instagram.json
+public/uploads/*
+!public/uploads/.gitkeep
+*.code-workspace

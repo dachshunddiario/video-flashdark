@@ -1,14 +1,22 @@
-import React, { useRef, useEffect } from "react";
+import React, { useRef } from "react";
 import {
   type ImageFlashAdjustment,
   type TemplateVisual,
+  type ImageCropConfig,
+  DEFAULT_IMAGE_CROP,
   INSTAGRAM_IMAGE_FORMATS,
 } from "@/lib/types";
 import { ImageProcessor } from "@/lib/image-processor";
 import { Sparkles } from "lucide-react";
 
 interface ImageCanvasPreviewProps {
-  currentImage: { id: string; file: File; name: string; previewUrl: string } | null;
+  currentImage: {
+    id: string;
+    file: File;
+    name: string;
+    previewUrl: string;
+    crop?: ImageCropConfig | undefined;
+  } | null;
   adjustment: ImageFlashAdjustment;
   template: TemplateVisual;
   className?: string;
@@ -34,6 +42,18 @@ export function ImageCanvasPreview({
   const scale = adjustment.zoom || 1;
   const filterStyle = ImageProcessor.getCanvasFilter(adjustment.filter, adjustment.filterIntensity ?? 50);
 
+  const effectiveCrop = currentImage?.crop ?? adjustment.crop ?? DEFAULT_IMAGE_CROP;
+  const isCropActive =
+    Boolean(effectiveCrop?.enabled) &&
+    ((effectiveCrop?.top ?? 0) > 0 ||
+      (effectiveCrop?.bottom ?? 0) > 0 ||
+      (effectiveCrop?.left ?? 0) > 0 ||
+      (effectiveCrop?.right ?? 0) > 0);
+
+  const remainingW = Math.max(1, 100 - (effectiveCrop?.left || 0) - (effectiveCrop?.right || 0));
+  const remainingH = Math.max(1, 100 - (effectiveCrop?.top || 0) - (effectiveCrop?.bottom || 0));
+  const cropAspect = `${remainingW} / ${remainingH}`;
+
   return (
     <div className={`relative flex flex-col items-center justify-center p-3 sm:p-6 select-none ${className}`}>
       {/* Badge de formato do Instagram */}
@@ -51,7 +71,7 @@ export function ImageCanvasPreview({
           backgroundColor: template.background?.color || "#0D0E15",
         }}
       >
-        {/* 1. Imagem Central Modelada */}
+        {/* 1. Imagem Central Modelada com Suporte a Recorte e Camadas */}
         <div
           style={{
             position: "absolute",
@@ -59,29 +79,63 @@ export function ImageCanvasPreview({
             top: `${adjustment.imageY ?? 56}%`,
             width: `${adjustment.imageWidth ?? 94}%`,
             transform: "translate(-50%, -50%)",
-            zIndex: 10,
+            zIndex: adjustment.layerOrder === "overlay" ? 40 : 10,
           }}
-          className="relative flex items-center justify-center"
+          className="relative flex items-center justify-center transition-all"
         >
           {currentImage ? (
             <div
               className="relative w-full overflow-hidden flex items-center justify-center shadow-lg transition-all"
               style={{
                 borderRadius: `${adjustment.borderRadius ?? 14}px`,
-                aspectRatio: adjustment.imageFit === "cover" ? (adjustment.format === "portrait_4_5" ? "4/3" : "1/1") : undefined,
+                aspectRatio: isCropActive
+                  ? cropAspect
+                  : adjustment.imageFit === "cover"
+                    ? adjustment.format === "portrait_4_5"
+                      ? "4/3"
+                      : "1/1"
+                    : undefined,
                 maxHeight: adjustment.format === "portrait_4_5" ? "380px" : "320px",
+                boxShadow:
+                  adjustment.layerOrder === "overlay"
+                    ? "0 18px 36px rgba(0,0,0,0.65), 0 0 0 1px rgba(255,255,255,0.12)"
+                    : undefined,
               }}
             >
-              <img
-                src={currentImage.previewUrl}
-                alt={currentImage.name}
-                className="w-full h-full object-cover transition-transform"
-                style={{
-                  objectFit: adjustment.imageFit,
-                  transform: `scale(${scale})`,
-                  filter: filterStyle,
-                }}
-              />
+              {isCropActive ? (
+                <div
+                  className="relative w-full h-full overflow-hidden"
+                  style={{
+                    transform: `scale(${scale})`,
+                    filter: filterStyle,
+                  }}
+                >
+                  <img
+                    src={currentImage.previewUrl}
+                    alt={currentImage.name}
+                    className="max-w-none transition-transform"
+                    style={{
+                      position: "absolute",
+                      width: `${(100 / remainingW) * 100}%`,
+                      height: `${(100 / remainingH) * 100}%`,
+                      left: `-${((effectiveCrop.left || 0) / remainingW) * 100}%`,
+                      top: `-${((effectiveCrop.top || 0) / remainingH) * 100}%`,
+                      objectFit: "fill",
+                    }}
+                  />
+                </div>
+              ) : (
+                <img
+                  src={currentImage.previewUrl}
+                  alt={currentImage.name}
+                  className="w-full h-full object-cover transition-transform"
+                  style={{
+                    objectFit: adjustment.imageFit,
+                    transform: `scale(${scale})`,
+                    filter: filterStyle,
+                  }}
+                />
+              )}
             </div>
           ) : (
             <div

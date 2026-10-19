@@ -755,6 +755,24 @@ export const INSTAGRAM_IMAGE_FORMATS: ImageFormatSpec[] = [
   },
 ];
 
+export interface ImageCropConfig {
+  enabled: boolean;
+  top: number; // 0 a 90% de corte a partir do topo
+  bottom: number; // 0 a 90% de corte a partir da base
+  left: number; // 0 a 90% de corte a partir da esquerda
+  right: number; // 0 a 90% de corte a partir da direita
+}
+
+export const DEFAULT_IMAGE_CROP: ImageCropConfig = {
+  enabled: false,
+  top: 0,
+  bottom: 0,
+  left: 0,
+  right: 0,
+};
+
+export type ImageLayerOrder = "behind" | "overlay";
+
 export interface ImageFlashAdjustment {
   imageX: number; // 0 a 100%
   imageY: number; // 0 a 100%
@@ -765,6 +783,8 @@ export interface ImageFlashAdjustment {
   filter: FilterType;
   filterIntensity: number;
   format: InstagramImageFormat;
+  crop?: ImageCropConfig | undefined;
+  layerOrder?: ImageLayerOrder | undefined;
 }
 
 export const DEFAULT_IMAGE_ADJUSTMENT: ImageFlashAdjustment = {
@@ -777,6 +797,8 @@ export const DEFAULT_IMAGE_ADJUSTMENT: ImageFlashAdjustment = {
   filter: "normal",
   filterIntensity: 50,
   format: "portrait_4_5",
+  crop: DEFAULT_IMAGE_CROP,
+  layerOrder: "behind",
 };
 
 export interface ImageQueueItem {
@@ -787,10 +809,98 @@ export interface ImageQueueItem {
   previewUrl: string;
   width: number;
   height: number;
-  adjustment?: ImageFlashAdjustment;
+  adjustment?: ImageFlashAdjustment | undefined;
+  crop?: ImageCropConfig | undefined;
+  croppedPreviewUrl?: string | undefined;
   status: "idle" | "rendering" | "done" | "error";
-  renderedBlob?: Blob;
-  renderedDataUrl?: string;
-  errorMessage?: string;
+  renderedBlob?: Blob | undefined;
+  renderedDataUrl?: string | undefined;
+  errorMessage?: string | undefined;
 }
+
+// ==========================================
+// MÓDULO AGENDADOR FLASH (INSTAGRAM & FACEBOOK PUBLISHING)
+// ==========================================
+
+export type AgendamentoMediaType = "IMAGE" | "REELS";
+export type AgendamentoStatus = "AGENDADO" | "PUBLICANDO" | "PUBLICADO" | "ERRO";
+export type DestinationPlatform = "INSTAGRAM" | "FACEBOOK" | "BOTH";
+
+export interface MetaConnection {
+  id: string; // Identificador único da conexão (ex: conn_1, conn_default)
+  label: string; // Nome descritivo (ex: "Perfil Principal", "Nichos Cinema", "Perfil Pessoal")
+  accessToken: string;
+  connectedAt: string;
+  appId?: string | null;
+  appName?: string | null;
+  accountsCount?: number;
+  hasPublishPermission?: boolean;
+}
+
+export interface InstagramConnectedAccount {
+  id: string; // Instagram Business Account ID ou identificador único
+  username: string;
+  name: string;
+  profilePictureUrl?: string | null;
+  followersCount?: number | null;
+  pageName?: string | null;
+  pageId?: string | null;
+  pageAccessToken?: string | null;
+  connectionId?: string | null;
+  connectionLabel?: string | null;
+  hasInstagram?: boolean; // True se tem perfil profissional do Instagram
+  hasFacebook?: boolean; // True se tem Página do Facebook vinculada
+}
+
+export interface MetaTokenValidation {
+  success: boolean;
+  isValid: boolean;
+  hasPublishPermission: boolean;
+  hasInstagramPublish?: boolean;
+  hasFacebookPublish?: boolean;
+  appId?: string | null;
+  appName?: string | null;
+  tokenType?: string | null;
+  grantedPermissions: string[];
+  missingPermissions: string[];
+  expiresAt?: number | null;
+  message?: string | null;
+}
+
+export interface AgendamentoInstagram {
+  id: string;
+  media_type: AgendamentoMediaType;
+  media_url: string;
+  caption: string;
+  scheduled_time: string; // ISO 8601
+  status: AgendamentoStatus;
+  destination_platform?: DestinationPlatform; // "INSTAGRAM" | "FACEBOOK" | "BOTH"
+  instagram_account_id?: string | null;
+  target_username?: string | null;
+  facebook_page_id?: string | null;
+  facebook_page_name?: string | null;
+  facebook_post_id?: string | null;
+  connection_id?: string | null;
+  creation_id?: string | null;
+  post_id?: string | null;
+  error_message?: string | null;
+  created_at: string; // ISO 8601
+  updated_at?: string | null;
+}
+
+export interface WorkerRunResult {
+  executedAt: string;
+  checkedCount: number;
+  publishedCount: number;
+  failedCount: number;
+  items: Array<{
+    id: string;
+    mediaType: AgendamentoMediaType;
+    status: AgendamentoStatus;
+    postId?: string | null;
+    facebookPostId?: string | null;
+    error?: string | null;
+  }>;
+}
+
 

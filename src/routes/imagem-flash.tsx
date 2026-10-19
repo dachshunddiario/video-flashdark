@@ -4,6 +4,7 @@ import {
   type ImageFlashAdjustment,
   type ImageQueueItem,
   type TemplateVisual,
+  type ImageCropConfig,
   DEFAULT_IMAGE_ADJUSTMENT,
   DEFAULT_TEMPLATE_VISUAL,
 } from "@/lib/types";
@@ -14,6 +15,7 @@ import { STORAGE_KEYS, useLocalState, uid } from "@/lib/local-store";
 import { ImageCanvasPreview } from "@/components/image-flash/ImageCanvasPreview";
 import { ImageTemplatePanel } from "@/components/image-flash/ImageTemplatePanel";
 import { ImageEditorPanel } from "@/components/image-flash/ImageEditorPanel";
+import { ImageCropModal } from "@/components/image-flash/ImageCropModal";
 import {
   Sparkles,
   Sliders,
@@ -76,6 +78,39 @@ export function ImagemFlashPage() {
   const [queue, setQueue] = useState<ImageQueueItem[]>([]);
   const [selectedIndex, setSelectedIndex] = useState<number>(0);
   const [activeTab, setActiveTab] = useState<"editor" | "template">("editor");
+  const [cropModalOpen, setCropModalOpen] = useState(false);
+
+  // Atualizar recorte manual (individual ou para toda a fila)
+  const handleUpdateItemCrop = (crop: ImageCropConfig, applyToAll: boolean) => {
+    if (applyToAll) {
+      setQueue((prev) =>
+        prev.map((item) => ({
+          ...item,
+          crop,
+        })),
+      );
+      setAdjustment((prev) => ({
+        ...prev,
+        crop,
+      }));
+    } else {
+      setQueue((prev) =>
+        prev.map((item, idx) =>
+          idx === selectedIndex
+            ? {
+                ...item,
+                crop,
+              }
+            : item,
+        ),
+      );
+      setAdjustment((prev) => ({
+        ...prev,
+        crop,
+      }));
+    }
+    setCropModalOpen(false);
+  };
 
   // Templates salvos no backend local
   const [savedTemplates, setSavedTemplates] = useState<{ name: string; template: TemplateVisual }[]>([]);
@@ -192,7 +227,14 @@ export function ImagemFlashPage() {
     try {
       setIsProcessing(true);
       setProgressMessage("Renderizando imagem...");
-      const blob = await ImageProcessor.renderImage(current.file, adjustment, template);
+      const blob = await ImageProcessor.renderImage(
+        current.file,
+        adjustment,
+        template,
+        undefined,
+        undefined,
+        current.crop,
+      );
       const dateStr = formatBatchDate();
       downloadBlob(blob, `Imagem_${current.name.replace(/\.[^/.]+$/, "")}_${dateStr}.png`);
     } catch (err) {
@@ -321,6 +363,8 @@ export function ImagemFlashPage() {
                 onClearQueue={handleClearQueue}
                 adjustment={adjustment}
                 onUpdateAdjustment={setAdjustment}
+                onUpdateItemCrop={handleUpdateItemCrop}
+                onOpenCropModal={() => setCropModalOpen(true)}
                 onExportAll={handleExportAll}
                 onExportCurrent={handleExportCurrent}
                 isProcessing={isProcessing}
@@ -350,6 +394,16 @@ export function ImagemFlashPage() {
           />
         </div>
       </div>
+
+      {/* Modal Interativo de Recorte Manual da Imagem */}
+      <ImageCropModal
+        isOpen={cropModalOpen}
+        onClose={() => setCropModalOpen(false)}
+        imageItem={currentItem}
+        initialCrop={currentItem?.crop ?? adjustment.crop}
+        onApplyCrop={handleUpdateItemCrop}
+        queueLength={queue.length}
+      />
     </div>
   );
 }

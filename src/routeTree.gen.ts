@@ -10,12 +10,18 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as AgendadorFlashRouteImport } from './routes/agendador-flash'
 import { Route as EditorRouteImport } from './routes/editor'
 import { Route as ImagemFlashRouteImport } from './routes/imagem-flash'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AgendadorFlashRoute = AgendadorFlashRouteImport.update({
+  id: '/agendador-flash',
+  path: '/agendador-flash',
   getParentRoute: () => rootRouteImport,
 } as any)
 const EditorRoute = EditorRouteImport.update({
@@ -31,30 +37,34 @@ const ImagemFlashRoute = ImagemFlashRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/agendador-flash': typeof AgendadorFlashRoute
   '/editor': typeof EditorRoute
   '/imagem-flash': typeof ImagemFlashRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/agendador-flash': typeof AgendadorFlashRoute
   '/editor': typeof EditorRoute
   '/imagem-flash': typeof ImagemFlashRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/agendador-flash': typeof AgendadorFlashRoute
   '/editor': typeof EditorRoute
   '/imagem-flash': typeof ImagemFlashRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/editor' | '/imagem-flash'
+  fullPaths: '/' | '/agendador-flash' | '/editor' | '/imagem-flash'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/editor' | '/imagem-flash'
-  id: '__root__' | '/' | '/editor' | '/imagem-flash'
+  to: '/' | '/agendador-flash' | '/editor' | '/imagem-flash'
+  id: '__root__' | '/' | '/agendador-flash' | '/editor' | '/imagem-flash'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AgendadorFlashRoute: typeof AgendadorFlashRoute
   EditorRoute: typeof EditorRoute
   ImagemFlashRoute: typeof ImagemFlashRoute
 }
@@ -66,6 +76,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/agendador-flash': {
+      id: '/agendador-flash'
+      path: '/agendador-flash'
+      fullPath: '/agendador-flash'
+      preLoaderRoute: typeof AgendadorFlashRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/editor': {
@@ -87,6 +104,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AgendadorFlashRoute: AgendadorFlashRoute,
   EditorRoute: EditorRoute,
   ImagemFlashRoute: ImagemFlashRoute,
 }

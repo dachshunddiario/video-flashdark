@@ -4,6 +4,8 @@ import {
   type InstagramImageFormat,
   INSTAGRAM_IMAGE_FORMATS,
   type FilterType,
+  type ImageCropConfig,
+  type ImageLayerOrder,
 } from "./types";
 import { formatBatchDate } from "./video-processor";
 import { createZip, downloadBlob } from "./zip-utils";
@@ -102,6 +104,7 @@ export class ImageProcessor {
     template: TemplateVisual,
     customWidth?: number,
     customHeight?: number,
+    overrideCrop?: ImageCropConfig,
   ): Promise<Blob> {
     const dims = ImageProcessor.getFormatDimensions(adj.format);
     const canvasWidth = customWidth ?? dims.width;
@@ -144,12 +147,77 @@ export class ImageProcessor {
     ctx.fillStyle = template.background?.color || "#0D0E15";
     ctx.fillRect(0, 0, canvasWidth, canvasHeight);
 
-    // 2. Renderização da Imagem Central
+    const isOverlay = adj.layerOrder === "overlay";
+
+    // Se NÃO for sobreposto, desenha a imagem primeiro (por baixo do texto)
+    if (!isOverlay) {
+      ImageProcessor.drawCentralImage(ctx, img, adj, canvasWidth, canvasHeight, overrideCrop);
+    }
+
+    // 2. Elementos do Template (Texto, Perfil, Selo, Marca d'água)
+    ImageProcessor.drawProfilePic(ctx, template, canvasWidth, canvasHeight, profileImg);
+    ImageProcessor.drawPageNameAndBadge(ctx, template, canvasWidth, canvasHeight);
+    ImageProcessor.drawHeadline(ctx, template, canvasWidth, canvasHeight);
+    ImageProcessor.drawSubHeadline(ctx, template, canvasWidth, canvasHeight);
+    ImageProcessor.drawWatermark(ctx, template, canvasWidth, canvasHeight, watermarkImg);
+
+    // Se FOR sobreposto, desenha a imagem por cima de tudo
+    if (isOverlay) {
+      ImageProcessor.drawCentralImage(ctx, img, adj, canvasWidth, canvasHeight, overrideCrop);
+    }
+
+    return new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob(
+        (blob) => {
+          if (blob) resolve(blob);
+          else reject(new Error("Falha ao exportar imagem"));
+        },
+        "image/png",
+        0.98,
+      );
+    });
+  }
+
+  /**
+   * Renderiza a imagem central no canvas com suporte a recorte e transformação.
+   */
+  static drawCentralImage(
+    ctx: CanvasRenderingContext2D,
+    img: HTMLImageElement,
+    adj: ImageFlashAdjustment,
+    canvasWidth: number,
+    canvasHeight: number,
+    overrideCrop?: ImageCropConfig,
+  ) {
     ctx.save();
     try {
       const srcW = img.naturalWidth || img.width;
       const srcH = img.naturalHeight || img.height;
-      const imgAspect = srcW / srcH;
+
+      const effectiveCrop = overrideCrop ?? adj.crop;
+      const isCropActive =
+        Boolean(effectiveCrop?.enabled) &&
+        ((effectiveCrop?.top ?? 0) > 0 ||
+          (effectiveCrop?.bottom ?? 0) > 0 ||
+          (effectiveCrop?.left ?? 0) > 0 ||
+          (effectiveCrop?.right ?? 0) > 0);
+
+      let cropLeft = 0;
+      let cropTop = 0;
+      let cutW = srcW;
+      let cutH = srcH;
+
+      if (isCropActive && effectiveCrop) {
+        cropLeft = Math.max(0, Math.min(srcW - 1, ((effectiveCrop.left || 0) / 100) * srcW));
+        cropTop = Math.max(0, Math.min(srcH - 1, ((effectiveCrop.top || 0) / 100) * srcH));
+        const cropRight = Math.max(0, Math.min(srcW - cropLeft - 1, ((effectiveCrop.right || 0) / 100) * srcW));
+        const cropBottom = Math.max(0, Math.min(srcH - cropTop - 1, ((effectiveCrop.bottom || 0) / 100) * srcH));
+
+        cutW = Math.max(1, srcW - cropLeft - cropRight);
+        cutH = Math.max(1, srcH - cropTop - cropBottom);
+      }
+
+      const imgAspect = cutW / cutH;
 
       const posX = ((adj.imageX ?? 50) / 100) * canvasWidth;
       const posY = ((adj.imageY ?? 56) / 100) * canvasHeight;
@@ -163,6 +231,13 @@ export class ImageProcessor {
       }
 
       ctx.translate(posX, posY);
+
+      // Se for sobreposto ao template, adiciona sombra suave para destacar
+      if (adj.layerOrder === "overlay") {
+        ctx.shadowColor = "rgba(0, 0, 0, 0.55)";
+        ctx.shadowBlur = Math.round(20 * (canvasWidth / 1080));
+        ctx.shadowOffsetY = Math.round(8 * (canvasWidth / 1080));
+      }
 
       // Cantos arredondados da imagem
       const rawRadius = adj.borderRadius ?? 14;
@@ -188,34 +263,59 @@ export class ImageProcessor {
         ctx.filter = ImageProcessor.getCanvasFilter(adj.filter, adj.filterIntensity ?? 50);
       }
 
-      ctx.drawImage(
-        img,
-        -renderWidth / 2,
-        -renderHeight / 2,
-        renderWidth,
-        renderHeight,
-      );
+      if (isCropActive) {
+        ctx.drawImage(
+          img,
+          cropLeft,
+          cropTop,
+          cutW,
+          cutH,
+          -renderWidth / 2,
+          -renderHeight / 2,
+          renderWidth,
+          renderHeight,
+        );
+      } else {
+        ctx.drawImage(
+          img,
+          -renderWidth / 2,
+          -renderHeight / 2,
+          renderWidth,
+          renderHeight,
+        );
+      }
     } finally {
       ctx.restore();
     }
+  }
 
-    // 3. Renderização dos Elementos do Template
-    ImageProcessor.drawProfilePic(ctx, template, canvasWidth, canvasHeight, profileImg);
-    ImageProcessor.drawPageNameAndBadge(ctx, template, canvasWidth, canvasHeight);
-    ImageProcessor.drawHeadline(ctx, template, canvasWidth, canvasHeight);
-    ImageProcessor.drawSubHeadline(ctx, template, canvasWidth, canvasHeight);
-    ImageProcessor.drawWatermark(ctx, template, canvasWidth, canvasHeight, watermarkImg);
+  /**
+   * Gera uma imagem recortada sob demanda em DataURL (PNG).
+   */
+  static async createCroppedDataUrl(
+    source: HTMLImageElement | File | string,
+    crop: ImageCropConfig,
+  ): Promise<string> {
+    const img = source instanceof HTMLImageElement ? source : await ImageProcessor.loadImage(source);
+    const srcW = img.naturalWidth || img.width;
+    const srcH = img.naturalHeight || img.height;
 
-    return new Promise<Blob>((resolve, reject) => {
-      canvas.toBlob(
-        (blob) => {
-          if (blob) resolve(blob);
-          else reject(new Error("Falha ao exportar imagem"));
-        },
-        "image/png",
-        0.98,
-      );
-    });
+    const cropLeftPx = Math.max(0, Math.min(srcW - 1, ((crop.left || 0) / 100) * srcW));
+    const cropTopPx = Math.max(0, Math.min(srcH - 1, ((crop.top || 0) / 100) * srcH));
+    const cropRightPx = Math.max(0, Math.min(srcW - cropLeftPx - 1, ((crop.right || 0) / 100) * srcW));
+    const cropBottomPx = Math.max(0, Math.min(srcH - cropTopPx - 1, ((crop.bottom || 0) / 100) * srcH));
+
+    const cutW = Math.max(1, srcW - cropLeftPx - cropRightPx);
+    const cutH = Math.max(1, srcH - cropTopPx - cropBottomPx);
+
+    const canvas = document.createElement("canvas");
+    canvas.width = cutW;
+    canvas.height = cutH;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return typeof source === "string" ? source : "";
+
+    ctx.drawImage(img, cropLeftPx, cropTopPx, cutW, cutH, 0, 0, cutW, cutH);
+    return canvas.toDataURL("image/png");
   }
 
   /**
@@ -475,7 +575,7 @@ export class ImageProcessor {
    * Renderização em massa de uma lista de imagens com acompanhamento de progresso.
    */
   static async renderBatch(
-    images: { id: string; file: File; name: string }[],
+    images: { id: string; file: File; name: string; crop?: ImageCropConfig | undefined }[],
     adj: ImageFlashAdjustment,
     template: TemplateVisual,
     onProgress?: ImageRenderProgressCallback,
@@ -495,7 +595,14 @@ export class ImageProcessor {
       const dateStr = formatBatchDate(date);
       const outputName = `Lote_${padIndex}_${dateStr}.png`;
 
-      const blob = await ImageProcessor.renderImage(item.file, adj, template);
+      const blob = await ImageProcessor.renderImage(
+        item.file,
+        adj,
+        template,
+        undefined,
+        undefined,
+        item.crop,
+      );
       const dataUrl = URL.createObjectURL(blob);
       const dims = ImageProcessor.getFormatDimensions(adj.format);
 
