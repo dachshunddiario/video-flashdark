@@ -2179,6 +2179,20 @@ export default {
   async fetch(request: Request, env: unknown, ctx: unknown) {
     const url = new URL(request.url);
 
+    // Intercepta rotas de verificação de domínio do TikTok Developers
+    if (
+      url.pathname.includes("tiktok-developers-site-verification") ||
+      url.pathname.includes("tiktok-site-verification")
+    ) {
+      return new Response("tiktok-developers-site-verification=XbfcIAgn51b4q9C01vRubC3tHdhoscXD", {
+        status: 200,
+        headers: {
+          "Content-Type": "text/plain; charset=utf-8",
+          "Cache-Control": "public, max-age=3600",
+        },
+      });
+    }
+
     // Intercepta requisições para o Agendador Flash de Publicações
     if (
       url.pathname === "/api/agendamentos" ||

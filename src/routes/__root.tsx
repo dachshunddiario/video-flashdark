@@ -91,6 +91,8 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
+      { name: "tiktok-developers-site-verification", content: "XbfcIAgn51b4q9C01vRubC3tHdhoscXD" },
+      { name: "tiktok-developers-site-verification", content: "tiktok-developers-site-verification=XbfcIAgn51b4q9C01vRubC3tHdhoscXD" },
     ],
     links: [
       { rel: "preconnect", href: "https://fonts.googleapis.com" },
