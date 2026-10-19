@@ -27,6 +27,7 @@ import { AgendadorForm } from "@/components/agendador/AgendadorForm";
 import { AgendamentosQueue } from "@/components/agendador/AgendamentosQueue";
 
 export const Route = createFileRoute("/agendador-flash")({
+  ssr: false,
   head: () => ({
     meta: [
       { title: "Agendador Flash · Publicações para Instagram" },

@@ -29,6 +29,7 @@ import { VideoProcessor, getBatchFileName, type ProcessedVideoResult } from "@/l
 import { downloadBlob } from "@/lib/zip-utils";
 
 export const Route = createFileRoute("/editor")({
+  ssr: false,
   head: () => ({
     meta: [
       { title: "Video Flash · Vídeos em Massa com GPU · Studio Local" },

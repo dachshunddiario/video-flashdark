@@ -27,6 +27,7 @@ import {
 } from "lucide-react";
 
 export const Route = createFileRoute("/imagem-flash")({
+  ssr: false,
   head: () => ({
     meta: [
       { title: "Imagem Flash · Modelagem de Imagens em Massa para Instagram" },

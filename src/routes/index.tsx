@@ -47,6 +47,7 @@ import {
 } from "@/components/ui/alert-dialog";
 
 export const Route = createFileRoute("/")({
+  ssr: false,
   head: () => ({
     meta: [
       { title: "Dashboard & Radar de Concorrentes · Studio Local" },
