@@ -18,9 +18,15 @@ const DATA_DIR = path.resolve(process.cwd(), "data");
 const DB_FILE = path.join(DATA_DIR, "historico_seguidores.json");
 const AUDIT_FILE = path.join(DATA_DIR, "cron_audit.log");
 
+let memoryHistorico: HistoricoSeguidoresRecord[] = [];
+
 // Garante que o diretório data/ exista
 async function ensureDataDir(): Promise<void> {
-  await fs.mkdir(DATA_DIR, { recursive: true });
+  try {
+    await fs.mkdir(DATA_DIR, { recursive: true });
+  } catch {
+    // Ambiente somente-leitura ou cloud (ex: Lovable preview)
+  }
 }
 
 /**
@@ -37,6 +43,7 @@ export async function getAllHistoricoRecords(): Promise<HistoricoSeguidoresRecor
     if (supabaseRecords && supabaseRecords.length > 0) {
       // Atualiza o cache local silenciosamente para resiliência offline
       saveAllHistoricoRecords(supabaseRecords).catch(() => {});
+      memoryHistorico = supabaseRecords;
       return supabaseRecords;
     }
   } catch (err) {
@@ -46,14 +53,18 @@ export async function getAllHistoricoRecords(): Promise<HistoricoSeguidoresRecor
   // 2. Fallback para arquivo local
   try {
     if (!fsSync.existsSync(DB_FILE)) {
-      return [];
+      return memoryHistorico;
     }
     const raw = await fs.readFile(DB_FILE, "utf-8");
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    if (Array.isArray(parsed)) {
+      memoryHistorico = parsed;
+      return parsed;
+    }
+    return memoryHistorico;
   } catch (err) {
-    console.error("[HistoricoDB] Erro ao ler banco de dados local:", err);
-    return [];
+    console.warn("[HistoricoDB] Erro ao ler banco de dados local:", err);
+    return memoryHistorico;
   }
 }
 
@@ -61,10 +72,15 @@ export async function getAllHistoricoRecords(): Promise<HistoricoSeguidoresRecor
  * Salva a lista completa de registros no arquivo JSON local.
  */
 async function saveAllHistoricoRecords(records: HistoricoSeguidoresRecord[]): Promise<void> {
+  memoryHistorico = records;
   await ensureDataDir();
-  const tmpFile = `${DB_FILE}.tmp.${Date.now()}`;
-  await fs.writeFile(tmpFile, JSON.stringify(records, null, 2), "utf-8");
-  await fs.rename(tmpFile, DB_FILE);
+  try {
+    const tmpFile = `${DB_FILE}.tmp.${Date.now()}`;
+    await fs.writeFile(tmpFile, JSON.stringify(records, null, 2), "utf-8");
+    await fs.rename(tmpFile, DB_FILE);
+  } catch (err) {
+    console.warn("[HistoricoDB] Não foi possível persistir em disco:", err);
+  }
 }
 
 /**

@@ -19,25 +19,32 @@ export interface StoredMetaConfig {
   activeConnectionId?: string | undefined;
 }
 
+let memoryConfig: StoredMetaConfig | null = null;
+
 async function ensureDataDir(): Promise<void> {
-  await fs.mkdir(DATA_DIR, { recursive: true });
+  try {
+    await fs.mkdir(DATA_DIR, { recursive: true });
+  } catch {
+    // Ambiente somente-leitura ou serverless (ex: Lovable preview)
+  }
 }
 
 export async function getSavedMetaConfig(): Promise<StoredMetaConfig | null> {
   await ensureDataDir();
   try {
     if (!fsSync.existsSync(CONFIG_FILE)) {
-      return null;
+      return memoryConfig;
     }
     const raw = await fs.readFile(CONFIG_FILE, "utf-8");
     const parsed = JSON.parse(raw);
     if (parsed && (parsed.accessToken || (Array.isArray(parsed.connections) && parsed.connections.length > 0))) {
+      memoryConfig = parsed as StoredMetaConfig;
       return parsed as StoredMetaConfig;
     }
-    return null;
+    return memoryConfig;
   } catch (err) {
     console.warn("[MetaConfigStore] Erro ao ler meta_config.json:", err);
-    return null;
+    return memoryConfig;
   }
 }
 
@@ -78,7 +85,12 @@ export async function saveMetaConfig(config: Partial<StoredMetaConfig>): Promise
     }
   }
 
-  await fs.writeFile(CONFIG_FILE, JSON.stringify(updated, null, 2), "utf-8");
+  memoryConfig = updated;
+  try {
+    await fs.writeFile(CONFIG_FILE, JSON.stringify(updated, null, 2), "utf-8");
+  } catch (err) {
+    console.warn("[MetaConfigStore] Não foi possível persistir em disco:", err);
+  }
   return updated;
 }
 

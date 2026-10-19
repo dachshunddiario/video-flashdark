@@ -40,7 +40,7 @@ export const Route = createFileRoute("/imagem-flash")({
   component: ImagemFlashPage,
 });
 
-export function ImagemFlashPage() {
+function ImagemFlashPage() {
   // Estado persistido de template e ajustes
   const { value: template, setValue: setTemplate } = useLocalState<TemplateVisual>(
     STORAGE_KEYS.imageFlashTemplate,

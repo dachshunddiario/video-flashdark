@@ -11,9 +11,15 @@ import { getSupabaseClient } from "./supabase";
 const DATA_DIR = path.resolve(process.cwd(), "data");
 const DB_FILE = path.join(DATA_DIR, "agendamentos_instagram.json");
 
+let memoryAgendamentos: AgendamentoInstagram[] = [];
+
 // Garante que o diretório data/ exista
 async function ensureDataDir(): Promise<void> {
-  await fs.mkdir(DATA_DIR, { recursive: true });
+  try {
+    await fs.mkdir(DATA_DIR, { recursive: true });
+  } catch {
+    // Ambiente somente-leitura ou cloud (ex: Lovable preview)
+  }
 }
 
 /**
@@ -68,6 +74,7 @@ export async function getAllAgendamentos(): Promise<AgendamentoInstagram[]> {
       if (!error && Array.isArray(data) && data.length > 0) {
         // Atualiza cache local silenciosamente
         saveAllLocal(data as AgendamentoInstagram[]).catch(() => {});
+        memoryAgendamentos = data as AgendamentoInstagram[];
         return data as AgendamentoInstagram[];
       }
     }
@@ -78,15 +85,18 @@ export async function getAllAgendamentos(): Promise<AgendamentoInstagram[]> {
   // 2. Fallback para arquivo JSON local
   try {
     if (!fsSync.existsSync(DB_FILE)) {
-      await fs.writeFile(DB_FILE, JSON.stringify([], null, 2), "utf-8");
-      return [];
+      return memoryAgendamentos;
     }
     const raw = await fs.readFile(DB_FILE, "utf-8");
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    if (Array.isArray(parsed)) {
+      memoryAgendamentos = parsed;
+      return parsed;
+    }
+    return memoryAgendamentos;
   } catch (err) {
-    console.error("[AgendamentosDB] Erro ao ler banco local:", err);
-    return [];
+    console.warn("[AgendamentosDB] Erro ao ler banco local:", err);
+    return memoryAgendamentos;
   }
 }
 
@@ -94,8 +104,13 @@ export async function getAllAgendamentos(): Promise<AgendamentoInstagram[]> {
  * Salva a lista completa no arquivo local.
  */
 async function saveAllLocal(records: AgendamentoInstagram[]): Promise<void> {
+  memoryAgendamentos = records;
   await ensureDataDir();
-  await fs.writeFile(DB_FILE, JSON.stringify(records, null, 2), "utf-8");
+  try {
+    await fs.writeFile(DB_FILE, JSON.stringify(records, null, 2), "utf-8");
+  } catch (err) {
+    console.warn("[AgendamentosDB] Não foi possível persistir em disco:", err);
+  }
 }
 
 /**

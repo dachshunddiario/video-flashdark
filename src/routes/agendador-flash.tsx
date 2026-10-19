@@ -40,7 +40,7 @@ export const Route = createFileRoute("/agendador-flash")({
   component: AgendadorFlashPage,
 });
 
-export function AgendadorFlashPage() {
+function AgendadorFlashPage() {
   // Configuração Meta persistida no cliente (localStorage)
   const { value: metaConfig, setValue: setMetaConfig } =
     useLocalState<MetaApiConfig | null>(STORAGE_KEYS.metaApiConfig, null);

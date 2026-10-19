@@ -1459,8 +1459,8 @@ async function normalizeCatastrophicSsrResponse(response: Response): Promise<Res
 
 function isH3SwallowedErrorBody(body: string): boolean {
   try {
-    const payload = JSON.parse(body) as { unhandled?: unknown; message?: unknown };
-    return payload.unhandled === true && payload.message === "HTTPError";
+    const payload = JSON.parse(body) as { unhandled?: unknown; message?: unknown; error?: unknown };
+    return payload.unhandled === true || payload.error === true || payload.message === "HTTPError";
   } catch {
     return false;
   }
@@ -2132,41 +2132,47 @@ async function handleAgendamentosApi(request: Request): Promise<Response> {
 }
 
 
-// Inicializa o agendador em background (Cron a cada 60s)
-let lastServerCronDate = "";
-setInterval(async () => {
-  // 1. Cron diário às 23:59 na tabela Historico_Seguidores
-  try {
-    const now = new Date();
-    const hours = now.getHours();
-    const minutes = now.getMinutes();
-    const todayStr = now.toISOString().slice(0, 10);
+// Inicializa o agendador em background (apenas em ambiente Node / Desktop local)
+try {
+  if (typeof process !== "undefined" && process.versions?.node && typeof setInterval === "function") {
+    let lastServerCronDate = "";
+    setInterval(async () => {
+      // 1. Cron diário às 23:59 na tabela Historico_Seguidores
+      try {
+        const now = new Date();
+        const hours = now.getHours();
+        const minutes = now.getMinutes();
+        const todayStr = now.toISOString().slice(0, 10);
 
-    if (hours === 23 && minutes >= 58 && lastServerCronDate !== todayStr) {
-      lastServerCronDate = todayStr;
-      console.log(`[Anti Gravity Cron] Executando rotina diária das 23:59 para salvar foto na tabela Historico_Seguidores...`);
-      await runDailyFollowersCron();
-      console.log(`[Anti Gravity Cron] Foto diária das 23:59 salva com sucesso!`);
-    }
-  } catch (err) {
-    console.error(`[Anti Gravity Cron] Erro ao rodar rotina diária:`, err);
-  }
-
-  // 2. Worker Agendador Flash: verifica publicações com status == 'AGENDADO' e scheduled_time <= agora
-  try {
-    const metaConfig = await getSavedMetaConfig();
-    if (metaConfig && metaConfig.accessToken && metaConfig.instagramAccountId) {
-      const workerRes = await runAgendamentosWorker(metaConfig);
-      if (workerRes.publishedCount > 0 || workerRes.failedCount > 0) {
-        console.log(
-          `[AgendadorFlash Worker] Ciclo concluído: ${workerRes.publishedCount} publicado(s), ${workerRes.failedCount} falha(s).`,
-        );
+        if (hours === 23 && minutes >= 58 && lastServerCronDate !== todayStr) {
+          lastServerCronDate = todayStr;
+          console.log(`[Anti Gravity Cron] Executando rotina diária das 23:59 para salvar foto na tabela Historico_Seguidores...`);
+          await runDailyFollowersCron();
+          console.log(`[Anti Gravity Cron] Foto diária das 23:59 salva com sucesso!`);
+        }
+      } catch (err) {
+        console.error(`[Anti Gravity Cron] Erro ao rodar rotina diária:`, err);
       }
-    }
-  } catch (agendadorErr) {
-    console.error(`[AgendadorFlash Worker] Erro no ciclo de agendamentos:`, agendadorErr);
+
+      // 2. Worker Agendador Flash: verifica publicações com status == 'AGENDADO' e scheduled_time <= agora
+      try {
+        const metaConfig = await getSavedMetaConfig();
+        if (metaConfig && metaConfig.accessToken && metaConfig.instagramAccountId) {
+          const workerRes = await runAgendamentosWorker(metaConfig);
+          if (workerRes.publishedCount > 0 || workerRes.failedCount > 0) {
+            console.log(
+              `[AgendadorFlash Worker] Ciclo concluído: ${workerRes.publishedCount} publicado(s), ${workerRes.failedCount} falha(s).`,
+            );
+          }
+        }
+      } catch (agendadorErr) {
+        console.error(`[AgendadorFlash Worker] Erro no ciclo de agendamentos:`, agendadorErr);
+      }
+    }, 60 * 1000);
   }
-}, 60 * 1000);
+} catch {
+  // Ignorado em ambientes restritos (como cloud preview do Lovable)
+}
 
 export default {
   async fetch(request: Request, env: unknown, ctx: unknown) {
