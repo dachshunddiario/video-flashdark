@@ -1,10 +1,10 @@
 import "./lib/error-capture";
-import { execFile, spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { safeCwd } from "./lib/env-safe";
 
 import { consumeLastCapturedError } from "./lib/error-capture";
 import { renderErrorPage } from "./lib/error-page";
@@ -61,7 +61,7 @@ async function getServerEntry(): Promise<ServerEntry> {
 }
 
 // Diretório nativo de templates dentro do projeto: <projectRoot>/templates
-const TEMPLATES_DIR = path.resolve(process.cwd(), "templates");
+const TEMPLATES_DIR = path.resolve(safeCwd(), "templates");
 
 function sanitizeFileName(name: string): string {
   const clean = name
@@ -486,7 +486,8 @@ async function handleNvencApi(request: Request): Promise<Response> {
       args.push(outputVideoPath);
 
       // Executa no hardware NVIDIA com monitoramento contínuo de progresso
-      await new Promise<void>((resolve, reject) => {
+      await new Promise<void>(async (resolve, reject) => {
+        const { spawn } = await import("node:child_process");
         const proc = spawn(ffmpegPath, args);
         let stderr = "";
 
@@ -1466,7 +1467,7 @@ function isH3SwallowedErrorBody(body: string): boolean {
   }
 }
 
-const UPLOADS_DIR = path.resolve(process.cwd(), "public", "uploads");
+const UPLOADS_DIR = path.resolve(safeCwd(), "public", "uploads");
 
 function getUploadMimeType(filePath: string): string {
   const ext = path.extname(filePath).toLowerCase();
@@ -2209,9 +2210,18 @@ export default {
     try {
       const handler = await getServerEntry();
       const response = await handler.fetch(request, env, ctx);
+      if (response.status >= 500) {
+        const contentType = response.headers.get("content-type") ?? "";
+        if (contentType.includes("application/json")) {
+          return new Response(renderErrorPage(), {
+            status: 500,
+            headers: { "content-type": "text/html; charset=utf-8" },
+          });
+        }
+      }
       return await normalizeCatastrophicSsrResponse(response);
     } catch (error) {
-      console.error(error);
+      console.error("[Server Error]:", error);
       return new Response(renderErrorPage(), {
         status: 500,
         headers: { "content-type": "text/html; charset=utf-8" },

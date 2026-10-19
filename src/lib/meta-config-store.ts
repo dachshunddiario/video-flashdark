@@ -2,8 +2,9 @@ import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import path from "node:path";
 import process from "node:process";
+import { safeCwd } from "./env-safe";
 
-const DATA_DIR = path.resolve(process.cwd(), "data");
+const DATA_DIR = path.resolve(safeCwd(), "data");
 const CONFIG_FILE = path.join(DATA_DIR, "meta_config.json");
 
 import { type MetaConnection } from "./types";

@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import path from "node:path";
 import process from "node:process";
+import { safeCwd } from "./env-safe";
 import {
   type AgendamentoInstagram,
   type AgendamentoStatus,
@@ -125,7 +126,7 @@ export async function ensurePublicMediaUrl(mediaUrl: string): Promise<string> {
   try {
     const urlObj = new URL(mediaUrl);
     const fileName = path.basename(urlObj.pathname);
-    const localFilePath = path.resolve(process.cwd(), "public", "uploads", fileName);
+    const localFilePath = path.resolve(safeCwd(), "public", "uploads", fileName);
 
     if (fsSync.existsSync(localFilePath)) {
       const fileBuffer = await fs.readFile(localFilePath);

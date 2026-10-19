@@ -7,8 +7,9 @@ import {
   type AgendamentoStatus,
 } from "./types";
 import { getSupabaseClient } from "./supabase";
+import { safeCwd } from "./env-safe";
 
-const DATA_DIR = path.resolve(process.cwd(), "data");
+const DATA_DIR = path.resolve(safeCwd(), "data");
 const DB_FILE = path.join(DATA_DIR, "agendamentos_instagram.json");
 
 let memoryAgendamentos: AgendamentoInstagram[] = [];

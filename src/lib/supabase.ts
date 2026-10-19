@@ -4,8 +4,9 @@ import fsSync from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { type HistoricoSeguidoresRecord, type ProfileType } from "./types";
+import { safeCwd } from "./env-safe";
 
-const DATA_DIR = path.resolve(process.cwd(), "data");
+const DATA_DIR = path.resolve(safeCwd(), "data");
 const CONFIG_FILE = path.join(DATA_DIR, "supabase_config.json");
 
 export interface SupabaseConfig {
