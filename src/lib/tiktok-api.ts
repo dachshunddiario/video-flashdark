@@ -1,0 +1,167 @@
+/**
+ * Módulo de Integração Oficial do TikTok Developer API v2
+ * Suporta Login Kit (OAuth 2.0) e Content Posting API (Direct Post)
+ */
+import fs from "node:fs/promises";
+import fsSync from "node:fs";
+import path from "node:path";
+import { safeCwd } from "./env-safe";
+
+const DATA_DIR = path.resolve(safeCwd(), "data");
+const CONFIG_FILE = path.join(DATA_DIR, "tiktok_config.json");
+
+export interface StoredTikTokConfig {
+  clientKey: string;
+  clientSecret: string;
+  accessToken?: string;
+  refreshToken?: string;
+  openId?: string;
+  displayName?: string;
+  avatarUrl?: string;
+  expiresAt?: number;
+  updatedAt?: string;
+}
+
+let inMemoryTikTokConfig: StoredTikTokConfig | null = null;
+
+async function ensureDataDir(): Promise<void> {
+  try {
+    await fs.mkdir(DATA_DIR, { recursive: true });
+  } catch {
+    // Ambiente somente-leitura ou nuvem
+  }
+}
+
+export async function getSavedTikTokConfig(): Promise<StoredTikTokConfig | null> {
+  await ensureDataDir();
+  try {
+    if (!fsSync.existsSync(CONFIG_FILE)) {
+      return inMemoryTikTokConfig;
+    }
+    const raw = await fs.readFile(CONFIG_FILE, "utf-8");
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object") {
+      inMemoryTikTokConfig = parsed as StoredTikTokConfig;
+      return inMemoryTikTokConfig;
+    }
+    return inMemoryTikTokConfig;
+  } catch (err) {
+    console.warn("[TikTokConfigStore] Erro ao ler tiktok_config.json:", err);
+    return inMemoryTikTokConfig;
+  }
+}
+
+export async function saveTikTokConfig(config: Partial<StoredTikTokConfig>): Promise<StoredTikTokConfig> {
+  await ensureDataDir();
+  const existing = (await getSavedTikTokConfig()) || {
+    clientKey: "",
+    clientSecret: "",
+  };
+
+  const updated: StoredTikTokConfig = {
+    ...existing,
+    ...config,
+    updatedAt: new Date().toISOString(),
+  };
+
+  inMemoryTikTokConfig = updated;
+  try {
+    await fs.writeFile(CONFIG_FILE, JSON.stringify(updated, null, 2), "utf-8");
+  } catch (err) {
+    console.warn("[TikTokConfigStore] Não foi possível persistir no disco:", err);
+  }
+  return updated;
+}
+
+/**
+ * Gera URL de autenticação OAuth 2.0 do TikTok
+ */
+export function getTikTokAuthUrl(clientKey: string, redirectUri: string, state = "flashdark_oauth"): string {
+  const scope = "user.info.basic,video.upload,video.publish";
+  const params = new URLSearchParams({
+    client_key: clientKey,
+    scope,
+    response_type: "code",
+    redirect_uri: redirectUri,
+    state,
+  });
+  return `https://www.tiktok.com/v2/auth/authorize/?${params.toString()}`;
+}
+
+/**
+ * Troca código OAuth por Access Token do TikTok
+ */
+export async function exchangeTikTokCode(
+  clientKey: string,
+  clientSecret: string,
+  code: string,
+  redirectUri: string,
+): Promise<{ success: boolean; data?: any; error?: string }> {
+  try {
+    const params = new URLSearchParams({
+      client_key: clientKey,
+      client_secret: clientSecret,
+      code,
+      grant_type: "authorization_code",
+      redirect_uri: redirectUri,
+    });
+
+    const res = await fetch("https://open.tiktokapis.com/v2/oauth/token/", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Cache-Control": "no-cache",
+      },
+      body: params.toString(),
+    });
+
+    const json = (await res.json()) as any;
+    if (json.error || !json.access_token) {
+      return {
+        success: false,
+        error: json.error_description || json.message || json.error || "Falha na troca de token do TikTok",
+      };
+    }
+
+    const expiresAt = Date.now() + (json.expires_in || 86400) * 1000;
+    await saveTikTokConfig({
+      clientKey,
+      clientSecret,
+      accessToken: json.access_token,
+      refreshToken: json.refresh_token,
+      openId: json.open_id,
+      expiresAt,
+    });
+
+    return { success: true, data: json };
+  } catch (err: any) {
+    return { success: false, error: err.message };
+  }
+}
+
+/**
+ * Obtém dados básicos do perfil autenticado
+ */
+export async function fetchTikTokUserInfo(accessToken: string): Promise<{ success: boolean; user?: any; error?: string }> {
+  try {
+    const fields = "open_id,union_id,avatar_url,display_name,bio_description,is_verified";
+    const res = await fetch(`https://open.tiktokapis.com/v2/user/info/?fields=${fields}`, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    });
+
+    const json = (await res.json()) as any;
+    if (json.data?.user) {
+      const u = json.data.user;
+      await saveTikTokConfig({
+        displayName: u.display_name,
+        avatarUrl: u.avatar_url,
+      });
+      return { success: true, user: u };
+    }
+    return { success: false, error: json.error?.message || "Erro ao consultar dados do usuário no TikTok" };
+  } catch (err: any) {
+    return { success: false, error: err.message };
+  }
+}

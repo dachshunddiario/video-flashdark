@@ -31,6 +31,11 @@ import {
   fetchMetaConnections,
   saveMetaConnectionApi,
   deleteMetaConnectionApi,
+  fetchTikTokStatusApi,
+  saveTikTokConfigApi,
+  getTikTokAuthUrlApi,
+  disconnectTikTokApi,
+  type TikTokStatusResponse,
 } from "@/lib/agendador-client";
 
 interface MetaCredentialsBarProps {
@@ -101,11 +106,68 @@ export function MetaCredentialsBar({
     loadConnections();
   }, []);
 
-  useEffect(() => {
-    if (connections) {
-      setConnectionsList(connections);
+  // TikTok Integration State
+  const [tikTokModalOpen, setTikTokModalOpen] = useState(false);
+  const [tikTokStatus, setTikTokStatus] = useState<TikTokStatusResponse | null>(null);
+  const [tikTokKeyInput, setTikTokKeyInput] = useState("");
+  const [tikTokSecretInput, setTikTokSecretInput] = useState("");
+  const [savingTikTok, setSavingTikTok] = useState(false);
+  const [tikTokFeedback, setTikTokFeedback] = useState<{ type: "success" | "error"; text: string } | null>(null);
+
+  const loadTikTokStatus = async () => {
+    try {
+      const st = await fetchTikTokStatusApi();
+      setTikTokStatus(st);
+    } catch {
+      // ignore
     }
-  }, [connections]);
+  };
+
+  useEffect(() => {
+    loadTikTokStatus();
+    const handleMessage = (e: MessageEvent) => {
+      if (e.data?.type === "TIKTOK_AUTH_SUCCESS") {
+        loadTikTokStatus();
+        setTikTokFeedback({ type: "success", text: "Conta do TikTok conectada com sucesso!" });
+      }
+    };
+    window.addEventListener("message", handleMessage);
+    return () => window.removeEventListener("message", handleMessage);
+  }, []);
+
+  const handleConnectTikTok = async () => {
+    try {
+      setSavingTikTok(true);
+      setTikTokFeedback(null);
+      if (tikTokKeyInput.trim() && tikTokSecretInput.trim()) {
+        await saveTikTokConfigApi({
+          clientKey: tikTokKeyInput.trim(),
+          clientSecret: tikTokSecretInput.trim(),
+        });
+      }
+      const authRes = await getTikTokAuthUrlApi(tikTokKeyInput.trim() || undefined);
+      if (authRes.success && authRes.authUrl) {
+        window.open(authRes.authUrl, "tiktok_oauth", "width=600,height=750");
+      } else {
+        setTikTokFeedback({ type: "error", text: authRes.message || "Erro ao obter URL de autenticação do TikTok." });
+      }
+    } catch (err: any) {
+      setTikTokFeedback({ type: "error", text: err.message || "Erro ao conectar com TikTok." });
+    } finally {
+      setSavingTikTok(false);
+    }
+  };
+
+  const handleDisconnectTikTok = async () => {
+    try {
+      await disconnectTikTokApi();
+      await loadTikTokStatus();
+      setTikTokFeedback({ type: "success", text: "Conta desconectada do TikTok." });
+    } catch (err: any) {
+      setTikTokFeedback({ type: "error", text: err.message });
+    }
+  };
+
 
   const handleAddConnection = async () => {
     const raw = newConnToken.trim();
@@ -458,6 +520,20 @@ export function MetaCredentialsBar({
             >
               <Key className="size-3.5" />
               Token Meta
+            </button>
+
+            <button
+              onClick={() => {
+                setTikTokFeedback(null);
+                setTikTokModalOpen(true);
+              }}
+              title="Configurar integração oficial do TikTok Developer (Login Kit & Content Posting)"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-3 py-1.5 text-xs font-semibold text-cyan-300 transition-all hover:bg-cyan-500/20 shadow-sm"
+            >
+              <span className="size-3.5 rounded-full bg-black border border-cyan-400/50 grid place-items-center text-[9px] text-cyan-400 font-bold leading-none">
+                🎵
+              </span>
+              <span>TikTok {tikTokStatus?.connected ? `(@${tikTokStatus.displayName || "Conectado"})` : "Conectar"}</span>
             </button>
           </div>
         </div>
@@ -1180,6 +1256,160 @@ export function MetaCredentialsBar({
                 className="rounded-lg bg-primary px-4 py-2 text-xs font-semibold text-primary-foreground hover:bg-primary/90"
               >
                 Entendi
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal TikTok Developer Integration */}
+      {tikTokModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-lg rounded-xl border border-cyan-500/30 bg-card p-6 shadow-2xl max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-border pb-4">
+              <div className="flex items-center gap-2.5">
+                <span className="size-8 rounded-lg bg-black border border-cyan-400/40 grid place-items-center text-sm text-cyan-400 font-bold">
+                  🎵
+                </span>
+                <div>
+                  <h3 className="text-base font-bold text-foreground">
+                    TikTok Developer Integration
+                  </h3>
+                  <p className="text-xs text-muted-foreground">
+                    Login Kit (OAuth 2.0) & Content Posting API
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setTikTokModalOpen(false)}
+                className="rounded-lg p-1.5 text-muted-foreground hover:bg-secondary hover:text-foreground"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Status Card */}
+            <div className="mt-4 rounded-xl border border-border bg-secondary/30 p-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  {tikTokStatus?.avatarUrl ? (
+                    <img
+                      src={tikTokStatus.avatarUrl}
+                      alt={tikTokStatus.displayName || "TikTok Profile"}
+                      className="size-10 rounded-full object-cover ring-2 ring-cyan-500/50"
+                    />
+                  ) : (
+                    <div className="size-10 rounded-full bg-cyan-500/20 text-cyan-300 grid place-items-center font-bold text-sm">
+                      TT
+                    </div>
+                  )}
+                  <div>
+                    <div className="text-sm font-semibold text-foreground">
+                      {tikTokStatus?.connected
+                        ? tikTokStatus.displayName || "Perfil TikTok Vinculado"
+                        : "Nenhum Perfil TikTok Conectado"}
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      {tikTokStatus?.connected ? "Token OAuth 2.0 ativo" : "Aguardando autenticação"}
+                    </div>
+                  </div>
+                </div>
+
+                {tikTokStatus?.connected ? (
+                  <button
+                    onClick={handleDisconnectTikTok}
+                    className="rounded-lg border border-red-500/30 bg-red-500/10 px-2.5 py-1 text-xs font-semibold text-red-400 hover:bg-red-500/20"
+                  >
+                    Desconectar
+                  </button>
+                ) : (
+                  <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-0.5 text-xs font-medium text-amber-400">
+                    Pendente
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* Feedback Message */}
+            {tikTokFeedback && (
+              <div
+                className={`mt-4 rounded-lg border p-3 text-xs ${
+                  tikTokFeedback.type === "success"
+                    ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+                    : "border-red-500/30 bg-red-500/10 text-red-300"
+                }`}
+              >
+                {tikTokFeedback.text}
+              </div>
+            )}
+
+            {/* Credenciais Form */}
+            <div className="mt-4 space-y-3.5">
+              <div>
+                <label className="text-xs font-semibold text-muted-foreground">
+                  Client Key do TikTok (App Details):
+                </label>
+                <input
+                  type="text"
+                  value={tikTokKeyInput}
+                  onChange={(e) => setTikTokKeyInput(e.target.value)}
+                  placeholder={tikTokStatus?.clientKey ? `Atual: ${tikTokStatus.clientKey}` : "ex: awq123456789..."}
+                  className="mt-1 w-full rounded-lg border border-border bg-secondary/50 px-3 py-2 text-xs text-foreground placeholder:text-muted-foreground/60 focus:border-cyan-500 focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-semibold text-muted-foreground">
+                  Client Secret do TikTok (App Details):
+                </label>
+                <input
+                  type="password"
+                  value={tikTokSecretInput}
+                  onChange={(e) => setTikTokSecretInput(e.target.value)}
+                  placeholder={tikTokStatus?.hasSecret ? "•••••••••••••••••••••••••••••• (salvo)" : "Cole seu Client Secret do TikTok"}
+                  className="mt-1 w-full rounded-lg border border-border bg-secondary/50 px-3 py-2 text-xs text-foreground placeholder:text-muted-foreground/60 focus:border-cyan-500 focus:outline-none"
+                />
+              </div>
+
+              {/* Botão Conectar */}
+              <button
+                type="button"
+                onClick={handleConnectTikTok}
+                disabled={savingTikTok}
+                className="w-full flex items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-cyan-600 to-blue-600 px-4 py-2.5 text-xs font-bold text-white shadow-md hover:from-cyan-500 hover:to-blue-500 disabled:opacity-50"
+              >
+                {savingTikTok ? "Conectando..." : "Salvar e Conectar com TikTok"}
+              </button>
+            </div>
+
+            {/* Informações para o Portal do Desenvolvedor (Guia do Vídeo) */}
+            <div className="mt-5 rounded-xl border border-cyan-500/20 bg-cyan-950/20 p-3.5 text-xs space-y-2">
+              <div className="font-bold text-cyan-300 flex items-center gap-1.5">
+                <Sparkles className="size-3.5" /> Configuração no TikTok Developer Portal:
+              </div>
+              <div>
+                <span className="text-muted-foreground">Redirect URI (Produção):</span>
+                <code className="block mt-0.5 rounded bg-black/60 px-2 py-1 font-mono text-[11px] text-cyan-200 select-all">
+                  https://video-flashdark.lovable.app/api/tiktok/callback
+                </code>
+              </div>
+              <div>
+                <span className="text-muted-foreground">Redirect URI (Local):</span>
+                <code className="block mt-0.5 rounded bg-black/60 px-2 py-1 font-mono text-[11px] text-cyan-200 select-all">
+                  http://localhost:8080/api/tiktok/callback
+                </code>
+              </div>
+              <div className="pt-1 text-[11px] text-muted-foreground leading-relaxed">
+                💡 <strong className="text-foreground">Dica do Vídeo:</strong> Em <em>Roles & Permissions &gt; Staging Testers</em> no Portal do TikTok, adicione seu nome de usuário TikTok para publicar e testar de imediato sem ter que aguardar aprovação de revisão pública!
+              </div>
+            </div>
+
+            <div className="mt-6 flex justify-end gap-2 border-t border-border pt-4">
+              <button
+                onClick={() => setTikTokModalOpen(false)}
+                className="rounded-lg border border-border px-4 py-2 text-xs font-semibold text-foreground hover:bg-secondary"
+              >
+                Fechar
               </button>
             </div>
           </div>

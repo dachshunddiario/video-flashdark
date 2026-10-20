@@ -824,7 +824,7 @@ export interface ImageQueueItem {
 
 export type AgendamentoMediaType = "IMAGE" | "REELS";
 export type AgendamentoStatus = "AGENDADO" | "PUBLICANDO" | "PUBLICADO" | "ERRO";
-export type DestinationPlatform = "INSTAGRAM" | "FACEBOOK" | "BOTH";
+export type DestinationPlatform = "INSTAGRAM" | "FACEBOOK" | "BOTH" | "TIKTOK" | "ALL";
 
 export interface MetaConnection {
   id: string; // Identificador único da conexão (ex: conn_1, conn_default)

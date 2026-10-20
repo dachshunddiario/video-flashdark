@@ -788,5 +788,65 @@
     "type": "Minha Página",
     "page_id": "ig-17841431491330889",
     "created_at": "2026-10-17T02:58:55.763Z"
+  },
+  {
+    "id": "hs-1792465080479-apc8j",
+    "profile_handle": "@buscofilmess",
+    "profile_name": "Filmes e Séries 🎬",
+    "date": "2026-10-20",
+    "followers_count": 7,
+    "type": "Minha Página",
+    "page_id": "ig-17841455686840587",
+    "created_at": "2026-10-20T02:58:00.479Z"
+  },
+  {
+    "id": "hs-1792465080521-t4gy6",
+    "profile_handle": "@catalogueipravoce",
+    "profile_name": "Catálogo de Filmes e Séries 📽️",
+    "date": "2026-10-20",
+    "followers_count": 13,
+    "type": "Minha Página",
+    "page_id": "ig-17841477065642345",
+    "created_at": "2026-10-20T02:58:00.522Z"
+  },
+  {
+    "id": "hs-1792465080561-o08dp",
+    "profile_handle": "@dachshunddiario",
+    "profile_name": "Dachshund Diário - Vida de Salsichinha🐾🌭",
+    "date": "2026-10-20",
+    "followers_count": 57420,
+    "type": "Minha Página",
+    "page_id": "ig-17841476345909183",
+    "created_at": "2026-10-20T02:58:48.357Z"
+  },
+  {
+    "id": "hs-1792465080600-2us1i",
+    "profile_handle": "@posteiumfilme",
+    "profile_name": "Postei um filme 🎞️",
+    "date": "2026-10-20",
+    "followers_count": 3,
+    "type": "Minha Página",
+    "page_id": "ig-17841433733240498",
+    "created_at": "2026-10-20T02:58:48.522Z"
+  },
+  {
+    "id": "hs-1792465080437-fxd4b",
+    "profile_handle": "@seu_concorrente",
+    "profile_name": "Concorrente X",
+    "date": "2026-10-20",
+    "followers_count": 10000,
+    "type": "Concorrente",
+    "page_id": "comp-1",
+    "created_at": "2026-10-20T02:58:00.437Z"
+  },
+  {
+    "id": "hs-1792465080641-uwrg8",
+    "profile_handle": "@viraldecinema",
+    "profile_name": "Viral de Cinema | Filmes e Séries",
+    "date": "2026-10-20",
+    "followers_count": 8,
+    "type": "Minha Página",
+    "page_id": "ig-17841431491330889",
+    "created_at": "2026-10-20T02:58:48.767Z"
   }
 ]

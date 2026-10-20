@@ -194,4 +194,51 @@ export async function deleteMetaConnectionApi(
   return data;
 }
 
+export interface TikTokStatusResponse {
+  success: boolean;
+  connected: boolean;
+  clientKey: string | null;
+  hasSecret: boolean;
+  displayName: string | null;
+  avatarUrl: string | null;
+  openId: string | null;
+  expiresAt: number | null;
+}
+
+export async function fetchTikTokStatusApi(): Promise<TikTokStatusResponse> {
+  const res = await fetch("/api/tiktok/status");
+  const data = await res.json();
+  return data as TikTokStatusResponse;
+}
+
+export async function getTikTokAuthUrlApi(clientKey?: string): Promise<{ success: boolean; authUrl?: string; redirectUri?: string; message?: string }> {
+  const query = clientKey ? `?clientKey=${encodeURIComponent(clientKey)}` : "";
+  const res = await fetch(`/api/tiktok/auth-url${query}`);
+  const data = await res.json();
+  return data;
+}
+
+export async function saveTikTokConfigApi(credentials: {
+  clientKey: string;
+  clientSecret: string;
+}): Promise<{ success: boolean; message?: string }> {
+  const res = await fetch("/api/tiktok/config", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(credentials),
+  });
+  const data = await res.json();
+  if (!res.ok || !data.success) {
+    throw new Error(data.message || "Erro ao salvar credenciais do TikTok.");
+  }
+  return data;
+}
+
+export async function disconnectTikTokApi(): Promise<{ success: boolean }> {
+  const res = await fetch("/api/tiktok/disconnect", { method: "POST" });
+  const data = await res.json();
+  return data;
+}
+
+
 

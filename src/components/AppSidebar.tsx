@@ -57,12 +57,31 @@ export function AppSidebar() {
         })}
       </nav>
 
-      <div className="mt-auto px-4 pb-5">
+      <div className="mt-auto px-4 pb-5 space-y-2.5">
         <div className="rounded-lg border border-border bg-secondary/40 p-3">
           <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
             <HardDrive className="size-3.5" />
             Dados salvos apenas neste computador
           </div>
+        </div>
+        <div className="flex items-center justify-center gap-3 text-[11px] text-muted-foreground/80">
+          <a
+            href="/terms.html"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="hover:text-foreground hover:underline transition-colors"
+          >
+            Terms of Service
+          </a>
+          <span>&bull;</span>
+          <a
+            href="/privacy.html"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="hover:text-foreground hover:underline transition-colors"
+          >
+            Privacy Policy
+          </a>
         </div>
       </div>
     </aside>

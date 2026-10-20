@@ -44,6 +44,13 @@ import {
   getMetaConnectionById,
 } from "./lib/meta-config-store";
 import { type MetaConnection } from "./lib/types";
+import {
+  getSavedTikTokConfig,
+  saveTikTokConfig,
+  getTikTokAuthUrl,
+  exchangeTikTokCode,
+  fetchTikTokUserInfo,
+} from "./lib/tiktok-api";
 
 type ServerEntry = {
   fetch: (request: Request, env: unknown, ctx: unknown) => Promise<Response> | Response;
@@ -2133,10 +2140,181 @@ async function handleAgendamentosApi(request: Request): Promise<Response> {
 }
 
 
-// Inicializa o agendador em background (apenas em ambiente Node / Desktop local)
-try {
-  if (typeof process !== "undefined" && process.versions?.node && typeof setInterval === "function") {
-    let lastServerCronDate = "";
+/**
+ * Roteamento da API do TikTok (/api/tiktok/*).
+ * Suporta Login Kit, OAuth 2.0 callback, consulta de status e credenciais.
+ */
+async function handleTikTokApi(request: Request): Promise<Response> {
+  const url = new URL(request.url);
+
+  // 1. GET /api/tiktok/callback — Callback OAuth do TikTok
+  if (url.pathname === "/api/tiktok/callback" && request.method === "GET") {
+    const code = url.searchParams.get("code") || "";
+    const state = url.searchParams.get("state") || "";
+    const error = url.searchParams.get("error") || "";
+    const errorDescription = url.searchParams.get("error_description") || "";
+
+    if (error) {
+      return new Response(
+        `<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>TikTok Auth Error</title></head>
+<body style="background:#0f172a;color:#f8fafc;font-family:sans-serif;padding:40px;text-align:center;">
+  <h2 style="color:#ef4444;">Erro na Autentica&ccedil;&atilde;o do TikTok</h2>
+  <p>${error}: ${errorDescription}</p>
+  <button onclick="window.close()" style="background:#3b82f6;color:white;border:none;padding:10px 20px;border-radius:6px;cursor:pointer;margin-top:20px;">Fechar</button>
+</body>
+</html>`,
+        { headers: { "Content-Type": "text/html; charset=utf-8" } },
+      );
+    }
+
+    if (code) {
+      try {
+        const cfg = await getSavedTikTokConfig();
+        if (cfg?.clientKey && cfg?.clientSecret) {
+          const origin = url.origin;
+          const redirectUri = `${origin}/api/tiktok/callback`;
+          const exchangeRes = await exchangeTikTokCode(cfg.clientKey, cfg.clientSecret, code, redirectUri);
+          if (exchangeRes.success && exchangeRes.data?.access_token) {
+            await fetchTikTokUserInfo(exchangeRes.data.access_token);
+          }
+        }
+      } catch (exchangeErr) {
+        console.warn("[TikTok API] Erro ao trocar token automaticamente no callback:", exchangeErr);
+      }
+    }
+
+    return new Response(
+      `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>TikTok Conectado - Flash Dark</title>
+</head>
+<body style="background:#090d16;color:#e2e8f0;font-family:system-ui,-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;">
+  <div style="background:#131c2e;padding:32px 40px;border-radius:16px;box-shadow:0 10px 30px rgba(0,0,0,0.5);text-align:center;max-width:420px;border:1px solid #1e293b;">
+    <div style="width:56px;height:56px;background:rgba(34,197,94,0.15);border:1px solid rgba(34,197,94,0.3);border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 16px;color:#22c55e;font-size:26px;">✓</div>
+    <h2 style="margin:0 0 8px;font-size:20px;font-weight:700;color:#f8fafc;">Conta TikTok Conectada!</h2>
+    <p style="margin:0 0 20px;color:#94a3b8;font-size:14px;line-height:1.5;">A autoriza&ccedil;&atilde;o do TikTok foi conclu&iacute;da com sucesso no Flash Dark.</p>
+    <button onclick="window.close()" style="background:#2563eb;color:#fff;border:none;font-weight:600;padding:10px 24px;border-radius:8px;cursor:pointer;font-size:14px;">Concluir e Fechar</button>
+  </div>
+  <script>
+    if (window.opener) {
+      window.opener.postMessage({ type: 'TIKTOK_AUTH_SUCCESS', code: ${JSON.stringify(code)} }, '*');
+      setTimeout(() => window.close(), 1500);
+    }
+  </script>
+</body>
+</html>`,
+      { headers: { "Content-Type": "text/html; charset=utf-8" } },
+    );
+  }
+
+  // 2. GET /api/tiktok/status — Retorna status da conexão TikTok
+  if (url.pathname === "/api/tiktok/status" && request.method === "GET") {
+    const cfg = await getSavedTikTokConfig();
+    const isConnected = Boolean(cfg?.accessToken && (!cfg.expiresAt || cfg.expiresAt > Date.now()));
+    return new Response(
+      JSON.stringify({
+        success: true,
+        connected: isConnected,
+        clientKey: cfg?.clientKey ? `${cfg.clientKey.slice(0, 4)}...${cfg.clientKey.slice(-4)}` : null,
+        hasSecret: Boolean(cfg?.clientSecret),
+        displayName: cfg?.displayName || null,
+        avatarUrl: cfg?.avatarUrl || null,
+        openId: cfg?.openId || null,
+        expiresAt: cfg?.expiresAt || null,
+      }),
+      { headers: { "Content-Type": "application/json" } },
+    );
+  }
+
+  // 3. GET /api/tiktok/auth-url — Gera URL de autorização OAuth
+  if (url.pathname === "/api/tiktok/auth-url" && request.method === "GET") {
+    const cfg = await getSavedTikTokConfig();
+    const clientKey = url.searchParams.get("clientKey") || cfg?.clientKey;
+    if (!clientKey) {
+      return new Response(
+        JSON.stringify({ success: false, message: "Client Key do TikTok não configurado." }),
+        { status: 400, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    const origin = url.origin;
+    const redirectUri = `${origin}/api/tiktok/callback`;
+    const authUrl = getTikTokAuthUrl(clientKey, redirectUri);
+    return new Response(
+      JSON.stringify({ success: true, authUrl, redirectUri }),
+      { headers: { "Content-Type": "application/json" } },
+    );
+  }
+
+  // 4. POST /api/tiktok/config — Salva credenciais (clientKey / clientSecret)
+  if (url.pathname === "/api/tiktok/config" && request.method === "POST") {
+    try {
+      const body = (await request.json()) as any;
+      if (!body.clientKey || !body.clientSecret) {
+        return new Response(
+          JSON.stringify({ success: false, message: "clientKey e clientSecret são obrigatórios." }),
+          { status: 400, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      const updated = await saveTikTokConfig({
+        clientKey: body.clientKey.trim(),
+        clientSecret: body.clientSecret.trim(),
+      });
+      return new Response(
+        JSON.stringify({ success: true, message: "Credenciais do TikTok salvas com sucesso!", config: updated }),
+        { headers: { "Content-Type": "application/json" } },
+      );
+    } catch (err: any) {
+      return new Response(
+        JSON.stringify({ success: false, message: err.message }),
+        { status: 500, headers: { "Content-Type": "application/json" } },
+      );
+    }
+  }
+
+  // 5. POST /api/tiktok/disconnect — Desconecta a conta do TikTok
+  if (url.pathname === "/api/tiktok/disconnect" && request.method === "POST") {
+    await saveTikTokConfig({
+      accessToken: undefined,
+      refreshToken: undefined,
+      openId: undefined,
+      displayName: undefined,
+      avatarUrl: undefined,
+      expiresAt: undefined,
+    });
+    return new Response(
+      JSON.stringify({ success: true, message: "Conta do TikTok desconectada com sucesso." }),
+      { headers: { "Content-Type": "application/json" } },
+    );
+  }
+
+  return new Response("Not found", { status: 404 });
+}
+
+// Inicializa o agendador em background (apenas em ambiente Node / Desktop local de longa duração)
+let isCronInitialized = false;
+function initLocalCronIfApplicable() {
+  if (isCronInitialized) return;
+
+  // Evita execução de timers em ambientes Edge / Cloudflare Workers
+  const isCloudflare =
+    typeof WebSocketPair !== "undefined" ||
+    (typeof caches !== "undefined" && typeof (caches as any).default !== "undefined") ||
+    (typeof navigator !== "undefined" && navigator.userAgent?.includes("Cloudflare")) ||
+    Boolean(
+      typeof process !== "undefined" &&
+        (process.env?.CF_PAGES || process.env?.WORKERS || process.env?.VERCEL || process.env?.NETLIFY),
+    );
+
+  if (isCloudflare) return;
+  if (typeof process === "undefined" || !process.versions?.node || typeof setInterval !== "function") return;
+
+  isCronInitialized = true;
+  let lastServerCronDate = "";
+  try {
     setInterval(async () => {
       // 1. Cron diário às 23:59 na tabela Historico_Seguidores
       try {
@@ -2170,13 +2348,14 @@ try {
         console.error(`[AgendadorFlash Worker] Erro no ciclo de agendamentos:`, agendadorErr);
       }
     }, 60 * 1000);
+  } catch {
+    // Ignorado se o ambiente não permitir timers
   }
-} catch {
-  // Ignorado em ambientes restritos (como cloud preview do Lovable)
 }
 
 export default {
   async fetch(request: Request, env: unknown, ctx: unknown) {
+    initLocalCronIfApplicable();
     const url = new URL(request.url);
 
     // Intercepta rotas de verificação de domínio do TikTok Developers
@@ -2191,6 +2370,11 @@ export default {
           "Cache-Control": "public, max-age=3600",
         },
       });
+    }
+
+    // Intercepta rotas da API do TikTok
+    if (url.pathname.startsWith("/api/tiktok/")) {
+      return handleTikTokApi(request);
     }
 
     // Intercepta requisições para o Agendador Flash de Publicações

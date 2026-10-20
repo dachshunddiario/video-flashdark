@@ -78,16 +78,16 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "Studio Local" },
+      { title: "Flash Dark - Smart Social Video Studio" },
       {
         name: "description",
         content:
-          "Aplicativo local para análise de páginas de redes sociais e edição de vídeos em massa com FFmpeg.",
+          "Flash Dark é a plataforma inteligente para criação, edição e publicação de vídeos de alto engajamento no TikTok, Instagram e redes sociais.",
       },
-      { property: "og:title", content: "Studio Local" },
+      { property: "og:title", content: "Flash Dark - Smart Social Video Studio" },
       {
         property: "og:description",
-        content: "Análise de redes sociais e edição de vídeos em massa, 100% local.",
+        content: "Criação, edição e publicação inteligente de vídeos e fotos para TikTok, Instagram e redes sociais.",
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },

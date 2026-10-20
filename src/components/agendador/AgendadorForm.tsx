@@ -437,37 +437,36 @@ export function AgendadorForm({
               Onde Publicar?
             </label>
             <span className="text-[11px] font-semibold text-primary">
-              {destinationPlatform === "BOTH"
-                ? "Instagram & Facebook (Ambos)"
+              {destinationPlatform === "ALL"
+                ? "Todos os Canais (IG, FB & TikTok)"
+                : destinationPlatform === "BOTH"
+                ? "Instagram & Facebook"
                 : destinationPlatform === "INSTAGRAM"
                 ? "Apenas Instagram"
-                : "Apenas Facebook"}
+                : destinationPlatform === "FACEBOOK"
+                ? "Apenas Facebook"
+                : "Apenas TikTok"}
             </span>
           </div>
 
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
             <button
               type="button"
-              onClick={() => setDestinationPlatform("BOTH")}
-              className={`flex items-center justify-center gap-2 rounded-lg border px-3 py-2 text-xs font-semibold transition-all ${
-                destinationPlatform === "BOTH"
+              onClick={() => setDestinationPlatform("ALL")}
+              className={`flex items-center justify-center gap-1.5 rounded-lg border px-2.5 py-2 text-xs font-semibold transition-all ${
+                destinationPlatform === "ALL"
                   ? "border-primary bg-primary/20 text-primary ring-2 ring-primary/40 shadow-sm"
                   : "border-border bg-secondary/40 text-muted-foreground hover:bg-secondary hover:text-foreground"
               }`}
             >
-              <div className="flex items-center -space-x-1">
-                <Instagram className="size-3.5 text-pink-400" />
-                <span className="size-3.5 rounded-full bg-blue-600 grid place-items-center text-[9px] text-white font-bold leading-none">
-                  f
-                </span>
-              </div>
-              <span>Ambos</span>
+              <Sparkles className="size-3.5 text-primary" />
+              <span>Todos</span>
             </button>
 
             <button
               type="button"
               onClick={() => setDestinationPlatform("INSTAGRAM")}
-              className={`flex items-center justify-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-semibold transition-all ${
+              className={`flex items-center justify-center gap-1.5 rounded-lg border px-2.5 py-2 text-xs font-semibold transition-all ${
                 destinationPlatform === "INSTAGRAM"
                   ? "border-pink-500 bg-pink-500/20 text-pink-300 ring-2 ring-pink-500/40 shadow-sm"
                   : "border-border bg-secondary/40 text-muted-foreground hover:bg-secondary hover:text-foreground"
@@ -480,7 +479,7 @@ export function AgendadorForm({
             <button
               type="button"
               onClick={() => setDestinationPlatform("FACEBOOK")}
-              className={`flex items-center justify-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-semibold transition-all ${
+              className={`flex items-center justify-center gap-1.5 rounded-lg border px-2.5 py-2 text-xs font-semibold transition-all ${
                 destinationPlatform === "FACEBOOK"
                   ? "border-blue-500 bg-blue-500/20 text-blue-300 ring-2 ring-blue-500/40 shadow-sm"
                   : "border-border bg-secondary/40 text-muted-foreground hover:bg-secondary hover:text-foreground"
@@ -490,6 +489,21 @@ export function AgendadorForm({
                 f
               </span>
               <span>Facebook</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setDestinationPlatform("TIKTOK")}
+              className={`flex items-center justify-center gap-1.5 rounded-lg border px-2.5 py-2 text-xs font-semibold transition-all ${
+                destinationPlatform === "TIKTOK"
+                  ? "border-cyan-500 bg-cyan-500/20 text-cyan-300 ring-2 ring-cyan-500/40 shadow-sm"
+                  : "border-border bg-secondary/40 text-muted-foreground hover:bg-secondary hover:text-foreground"
+              }`}
+            >
+              <span className="size-3.5 rounded-full bg-black border border-cyan-400/50 grid place-items-center text-[9px] text-cyan-400 font-bold leading-none">
+                🎵
+              </span>
+              <span>TikTok</span>
             </button>
           </div>
         </div>
