@@ -13,17 +13,17 @@ const CONFIG_FILE = path.join(DATA_DIR, "tiktok_config.json");
 export interface StoredTikTokConfig {
   clientKey: string;
   clientSecret: string;
-  accessToken?: string;
-  refreshToken?: string;
-  openId?: string;
-  displayName?: string;
-  avatarUrl?: string;
-  expiresAt?: number;
-  updatedAt?: string;
+  accessToken?: string | undefined;
+  refreshToken?: string | undefined;
+  openId?: string | undefined;
+  displayName?: string | undefined;
+  avatarUrl?: string | undefined;
+  expiresAt?: number | undefined;
+  updatedAt?: string | undefined;
 }
 
-const DEFAULT_CLIENT_KEY = process.env.TIKTOK_CLIENT_KEY || "awskq2nyl73e2300";
-const DEFAULT_CLIENT_SECRET = process.env.TIKTOK_CLIENT_SECRET || "zq1Y0l0kUFzyNxBqFg1fHsNrwgWn6id5";
+const DEFAULT_CLIENT_KEY = process.env["TIKTOK_CLIENT_KEY"] || "awskq2nyl73e2300";
+const DEFAULT_CLIENT_SECRET = process.env["TIKTOK_CLIENT_SECRET"] || "zq1Y0l0kUFzyNxBqFg1fHsNrwgWn6id5";
 
 let inMemoryTikTokConfig: StoredTikTokConfig | null = {
   clientKey: DEFAULT_CLIENT_KEY,

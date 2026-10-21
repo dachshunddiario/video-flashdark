@@ -16,6 +16,7 @@ import {
   Plus,
   Trash2,
   Layers,
+  Sparkles,
 } from "lucide-react";
 import {
   type MetaApiConfig,
