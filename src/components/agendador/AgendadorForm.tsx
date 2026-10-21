@@ -577,6 +577,11 @@ export function AgendadorForm({
                               FB: {acc.pageName}
                             </span>
                           )}
+                          {acc.connectionLabel && (
+                            <span className="rounded bg-primary/15 border border-primary/30 px-1 text-[9px] font-semibold text-primary">
+                              {acc.connectionLabel}
+                            </span>
+                          )}
                           {typeof acc.followersCount === "number" && (
                             <span className="text-[10px] font-semibold text-primary/90">
                               {formatFollowers(acc.followersCount)} seg.

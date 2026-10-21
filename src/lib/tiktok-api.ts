@@ -83,29 +83,68 @@ export async function saveTikTokConfig(config: Partial<StoredTikTokConfig>): Pro
   return updated;
 }
 
+import crypto from "node:crypto";
+
 /**
- * Gera URL de autenticação OAuth 2.0 do TikTok
+ * Gera par PKCE (code_verifier e code_challenge no padrão lower-case hex SHA-256 exigido pelo TikTok)
  */
-export function getTikTokAuthUrl(clientKey: string, redirectUri: string, state = "flashdark_oauth"): string {
+export function generatePkcePair(): { codeVerifier: string; codeChallenge: string } {
+  const codeVerifier = crypto.randomBytes(32).toString("hex"); // 64 caracteres [a-f0-9]
+  const codeChallenge = crypto.createHash("sha256").update(codeVerifier).digest("hex"); // 64 caracteres hex minúsculo
+  return { codeVerifier, codeChallenge };
+}
+
+/**
+ * Gera URL de autenticação OAuth 2.0 do TikTok com suporte obrigatório a PKCE (code_challenge)
+ */
+export function getTikTokAuthUrl(
+  clientKey: string,
+  redirectUri: string,
+  codeChallenge?: string,
+  state = "flashdark_oauth",
+  profileId?: string,
+): { authUrl: string; codeVerifier?: string; state: string } {
+  let verifier = "";
+  let challenge = codeChallenge;
+
+  if (!challenge) {
+    const pkce = generatePkcePair();
+    verifier = pkce.codeVerifier;
+    challenge = pkce.codeChallenge;
+  }
+
+  let finalState = state;
+  if (finalState === "flashdark_oauth") {
+    finalState = profileId && verifier ? `fd_${verifier}_${profileId}` : verifier ? `fd_${verifier}` : `flashdark_${Date.now()}`;
+  }
+
   const scope = "user.info.basic,video.upload,video.publish";
   const params = new URLSearchParams({
     client_key: clientKey,
     scope,
     response_type: "code",
     redirect_uri: redirectUri,
-    state,
+    state: finalState,
+    code_challenge: challenge,
+    code_challenge_method: "S256",
   });
-  return `https://www.tiktok.com/v2/auth/authorize/?${params.toString()}`;
+
+  return {
+    authUrl: `https://www.tiktok.com/v2/auth/authorize/?${params.toString()}`,
+    codeVerifier: verifier || undefined,
+    state: finalState,
+  };
 }
 
 /**
- * Troca código OAuth por Access Token do TikTok
+ * Troca código OAuth por Access Token do TikTok com suporte a code_verifier do PKCE
  */
 export async function exchangeTikTokCode(
   clientKey: string,
   clientSecret: string,
   code: string,
   redirectUri: string,
+  codeVerifier?: string,
 ): Promise<{ success: boolean; data?: any; error?: string }> {
   try {
     const params = new URLSearchParams({
@@ -115,6 +154,10 @@ export async function exchangeTikTokCode(
       grant_type: "authorization_code",
       redirect_uri: redirectUri,
     });
+
+    if (codeVerifier) {
+      params.append("code_verifier", codeVerifier);
+    }
 
     const res = await fetch("https://open.tiktokapis.com/v2/oauth/token/", {
       method: "POST",

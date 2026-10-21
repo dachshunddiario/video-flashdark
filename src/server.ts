@@ -42,6 +42,7 @@ import {
   deleteMetaConnection,
   findConnectionForAccountId,
   getMetaConnectionById,
+  updateConnectionTikTok,
 } from "./lib/meta-config-store";
 import { type MetaConnection } from "./lib/types";
 import {
@@ -2170,15 +2171,43 @@ async function handleTikTokApi(request: Request): Promise<Response> {
       );
     }
 
+    let codeVerifier: string | undefined = undefined;
+    let profileId: string | undefined = undefined;
+    if (state.startsWith("fd_")) {
+      const parts = state.split("_");
+      codeVerifier = parts[1];
+      if (parts.length >= 3) {
+        profileId = parts.slice(2).join("_");
+      }
+    }
+
     if (code) {
       try {
         const cfg = await getSavedTikTokConfig();
         if (cfg?.clientKey && cfg?.clientSecret) {
           const origin = url.origin;
           const redirectUri = `${origin}/api/tiktok/callback`;
-          const exchangeRes = await exchangeTikTokCode(cfg.clientKey, cfg.clientSecret, code, redirectUri);
+          const exchangeRes = await exchangeTikTokCode(
+            cfg.clientKey,
+            cfg.clientSecret,
+            code,
+            redirectUri,
+            codeVerifier,
+          );
           if (exchangeRes.success && exchangeRes.data?.access_token) {
-            await fetchTikTokUserInfo(exchangeRes.data.access_token);
+            const userInfo = await fetchTikTokUserInfo(exchangeRes.data.access_token);
+            if (profileId) {
+              await updateConnectionTikTok(profileId, {
+                clientKey: cfg.clientKey,
+                clientSecret: cfg.clientSecret,
+                accessToken: exchangeRes.data.access_token,
+                refreshToken: exchangeRes.data.refresh_token,
+                openId: exchangeRes.data.open_id,
+                displayName: userInfo?.displayName || undefined,
+                avatarUrl: userInfo?.avatarUrl || undefined,
+                expiresAt: Date.now() + (exchangeRes.data.expires_in || 86400) * 1000,
+              });
+            }
           }
         }
       } catch (exchangeErr) {
@@ -2202,7 +2231,7 @@ async function handleTikTokApi(request: Request): Promise<Response> {
   </div>
   <script>
     if (window.opener) {
-      window.opener.postMessage({ type: 'TIKTOK_AUTH_SUCCESS', code: ${JSON.stringify(code)} }, '*');
+      window.opener.postMessage({ type: 'TIKTOK_AUTH_SUCCESS', code: ${JSON.stringify(code)}, profileId: ${JSON.stringify(profileId || null)} }, '*');
       setTimeout(() => window.close(), 1500);
     }
   </script>
@@ -2214,27 +2243,42 @@ async function handleTikTokApi(request: Request): Promise<Response> {
 
   // 2. GET /api/tiktok/status — Retorna status da conexão TikTok
   if (url.pathname === "/api/tiktok/status" && request.method === "GET") {
+    const profileId = url.searchParams.get("profileId");
+    let targetProfile = profileId ? await getMetaConnectionById(profileId) : null;
     const cfg = await getSavedTikTokConfig();
-    const isConnected = Boolean(cfg?.accessToken && (!cfg.expiresAt || cfg.expiresAt > Date.now()));
+
+    const clientKey = targetProfile?.tikTok?.clientKey || cfg?.clientKey;
+    const hasSecret = Boolean(targetProfile?.tikTok?.clientSecret || cfg?.clientSecret);
+    const accessToken = targetProfile?.tikTok?.accessToken || cfg?.accessToken;
+    const expiresAt = targetProfile?.tikTok?.expiresAt || cfg?.expiresAt;
+    const displayName = targetProfile?.tikTok?.displayName || cfg?.displayName;
+    const avatarUrl = targetProfile?.tikTok?.avatarUrl || cfg?.avatarUrl;
+    const openId = targetProfile?.tikTok?.openId || cfg?.openId;
+
+    const isConnected = Boolean(accessToken && (!expiresAt || expiresAt > Date.now()));
     return new Response(
       JSON.stringify({
         success: true,
         connected: isConnected,
-        clientKey: cfg?.clientKey ? `${cfg.clientKey.slice(0, 4)}...${cfg.clientKey.slice(-4)}` : null,
-        hasSecret: Boolean(cfg?.clientSecret),
-        displayName: cfg?.displayName || null,
-        avatarUrl: cfg?.avatarUrl || null,
-        openId: cfg?.openId || null,
-        expiresAt: cfg?.expiresAt || null,
+        clientKey: clientKey ? `${clientKey.slice(0, 4)}...${clientKey.slice(-4)}` : null,
+        hasSecret,
+        displayName: displayName || null,
+        avatarUrl: avatarUrl || null,
+        openId: openId || null,
+        expiresAt: expiresAt || null,
+        profileId: targetProfile?.id || null,
       }),
       { headers: { "Content-Type": "application/json" } },
     );
   }
 
-  // 3. GET /api/tiktok/auth-url — Gera URL de autorização OAuth
+  // 3. GET /api/tiktok/auth-url — Gera URL de autorização OAuth com PKCE obrigatório
   if (url.pathname === "/api/tiktok/auth-url" && request.method === "GET") {
+    const profileId = url.searchParams.get("profileId") || undefined;
     const cfg = await getSavedTikTokConfig();
-    const clientKey = url.searchParams.get("clientKey") || cfg?.clientKey;
+    let targetProfile = profileId ? await getMetaConnectionById(profileId) : null;
+    const clientKey = url.searchParams.get("clientKey") || targetProfile?.tikTok?.clientKey || cfg?.clientKey;
+
     if (!clientKey) {
       return new Response(
         JSON.stringify({ success: false, message: "Client Key do TikTok não configurado." }),
@@ -2243,9 +2287,9 @@ async function handleTikTokApi(request: Request): Promise<Response> {
     }
     const origin = url.origin;
     const redirectUri = `${origin}/api/tiktok/callback`;
-    const authUrl = getTikTokAuthUrl(clientKey, redirectUri);
+    const authData = getTikTokAuthUrl(clientKey, redirectUri, undefined, "flashdark_oauth", profileId);
     return new Response(
-      JSON.stringify({ success: true, authUrl, redirectUri }),
+      JSON.stringify({ success: true, authUrl: authData.authUrl, redirectUri, state: authData.state }),
       { headers: { "Content-Type": "application/json" } },
     );
   }

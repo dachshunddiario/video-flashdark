@@ -205,14 +205,21 @@ export interface TikTokStatusResponse {
   expiresAt: number | null;
 }
 
-export async function fetchTikTokStatusApi(): Promise<TikTokStatusResponse> {
-  const res = await fetch("/api/tiktok/status");
+export async function fetchTikTokStatusApi(profileId?: string): Promise<TikTokStatusResponse> {
+  const query = profileId ? `?profileId=${encodeURIComponent(profileId)}` : "";
+  const res = await fetch(`/api/tiktok/status${query}`);
   const data = await res.json();
   return data as TikTokStatusResponse;
 }
 
-export async function getTikTokAuthUrlApi(clientKey?: string): Promise<{ success: boolean; authUrl?: string; redirectUri?: string; message?: string }> {
-  const query = clientKey ? `?clientKey=${encodeURIComponent(clientKey)}` : "";
+export async function getTikTokAuthUrlApi(
+  clientKey?: string,
+  profileId?: string,
+): Promise<{ success: boolean; authUrl?: string; redirectUri?: string; message?: string }> {
+  const params = new URLSearchParams();
+  if (clientKey) params.set("clientKey", clientKey);
+  if (profileId) params.set("profileId", profileId);
+  const query = params.toString() ? `?${params.toString()}` : "";
   const res = await fetch(`/api/tiktok/auth-url${query}`);
   const data = await res.json();
   return data;
@@ -234,8 +241,12 @@ export async function saveTikTokConfigApi(credentials: {
   return data;
 }
 
-export async function disconnectTikTokApi(): Promise<{ success: boolean }> {
-  const res = await fetch("/api/tiktok/disconnect", { method: "POST" });
+export async function disconnectTikTokApi(profileId?: string): Promise<{ success: boolean }> {
+  const res = await fetch("/api/tiktok/disconnect", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ profileId }),
+  });
   const data = await res.json();
   return data;
 }

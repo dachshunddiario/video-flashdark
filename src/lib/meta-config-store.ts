@@ -7,7 +7,7 @@ import { safeCwd } from "./env-safe";
 const DATA_DIR = path.resolve(safeCwd(), "data");
 const CONFIG_FILE = path.join(DATA_DIR, "meta_config.json");
 
-import { type MetaConnection } from "./types";
+import { type MetaConnection, type TikTokProfileConfig } from "./types";
 
 export interface StoredMetaConfig {
   accessToken: string;
@@ -223,6 +223,28 @@ export async function getMetaConnectionById(
   if (!connectionId) return null;
   const connections = await getAllMetaConnections();
   return connections.find((c) => c.id === connectionId) || null;
+}
+
+/**
+ * Atualiza ou vincula as credenciais do TikTok a uma conexão/perfil específico
+ */
+export async function updateConnectionTikTok(
+  connectionId: string,
+  tikTokData: Partial<TikTokProfileConfig>,
+): Promise<MetaConnection | null> {
+  const config = await getSavedMetaConfig();
+  if (!config || !Array.isArray(config.connections)) return null;
+
+  const target = config.connections.find((c) => c.id === connectionId);
+  if (!target) return null;
+
+  target.tikTok = {
+    ...(target.tikTok || {}),
+    ...tikTokData,
+  };
+
+  await saveMetaConfig({ connections: config.connections });
+  return target;
 }
 
 

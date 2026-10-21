@@ -826,15 +826,27 @@ export type AgendamentoMediaType = "IMAGE" | "REELS";
 export type AgendamentoStatus = "AGENDADO" | "PUBLICANDO" | "PUBLICADO" | "ERRO";
 export type DestinationPlatform = "INSTAGRAM" | "FACEBOOK" | "BOTH" | "TIKTOK" | "ALL";
 
+export interface TikTokProfileConfig {
+  clientKey?: string | undefined;
+  clientSecret?: string | undefined;
+  accessToken?: string | undefined;
+  refreshToken?: string | undefined;
+  openId?: string | undefined;
+  displayName?: string | undefined;
+  avatarUrl?: string | undefined;
+  expiresAt?: number | undefined;
+}
+
 export interface MetaConnection {
-  id: string; // Identificador único da conexão (ex: conn_1, conn_default)
-  label: string; // Nome descritivo (ex: "Perfil Principal", "Nichos Cinema", "Perfil Pessoal")
+  id: string; // Identificador único da conexão (ex: conn_1, conn_default, conn_dachshunddiario)
+  label: string; // Nome descritivo (ex: "Dachshund Diário", "Cataloguei Pra Você", "Viral de Cinema")
   accessToken: string;
   connectedAt: string;
-  appId?: string | null;
-  appName?: string | null;
-  accountsCount?: number;
-  hasPublishPermission?: boolean;
+  appId?: string | null | undefined;
+  appName?: string | null | undefined;
+  accountsCount?: number | undefined;
+  hasPublishPermission?: boolean | undefined;
+  tikTok?: TikTokProfileConfig | null | undefined;
 }
 
 export interface InstagramConnectedAccount {
