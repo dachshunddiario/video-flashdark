@@ -2361,10 +2361,12 @@ export default {
 
     // Intercepta rotas de verificação de domínio do TikTok Developers
     if (
+      url.pathname.includes("tiktokrNFSXvY0goH5yqN31kLC2Tz4HrOzpaJE") ||
       url.pathname.includes("tiktok-developers-site-verification") ||
-      url.pathname.includes("tiktok-site-verification")
+      url.pathname.includes("tiktok-site-verification") ||
+      (url.pathname.startsWith("/tiktok") && (url.pathname.endsWith(".txt") || !url.pathname.slice(1).includes("/")))
     ) {
-      return new Response("tiktok-developers-site-verification=XbfcIAgn51b4q9C01vRubC3tHdhoscXD", {
+      return new Response("tiktok-developers-site-verification=rNFSXvY0goH5yqN31kLC2Tz4HrOzpaJE", {
         status: 200,
         headers: {
           "Content-Type": "text/plain; charset=utf-8",
