@@ -22,7 +22,13 @@ export interface StoredTikTokConfig {
   updatedAt?: string;
 }
 
-let inMemoryTikTokConfig: StoredTikTokConfig | null = null;
+const DEFAULT_CLIENT_KEY = process.env.TIKTOK_CLIENT_KEY || "awskq2nyl73e2300";
+const DEFAULT_CLIENT_SECRET = process.env.TIKTOK_CLIENT_SECRET || "zq1Y0l0kUFzyNxBqFg1fHsNrwgWn6id5";
+
+let inMemoryTikTokConfig: StoredTikTokConfig | null = {
+  clientKey: DEFAULT_CLIENT_KEY,
+  clientSecret: DEFAULT_CLIENT_SECRET,
+};
 
 async function ensureDataDir(): Promise<void> {
   try {
@@ -41,7 +47,11 @@ export async function getSavedTikTokConfig(): Promise<StoredTikTokConfig | null>
     const raw = await fs.readFile(CONFIG_FILE, "utf-8");
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === "object") {
-      inMemoryTikTokConfig = parsed as StoredTikTokConfig;
+      inMemoryTikTokConfig = {
+        clientKey: DEFAULT_CLIENT_KEY,
+        clientSecret: DEFAULT_CLIENT_SECRET,
+        ...parsed,
+      };
       return inMemoryTikTokConfig;
     }
     return inMemoryTikTokConfig;

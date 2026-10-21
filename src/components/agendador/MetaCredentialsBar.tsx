@@ -109,8 +109,8 @@ export function MetaCredentialsBar({
   // TikTok Integration State
   const [tikTokModalOpen, setTikTokModalOpen] = useState(false);
   const [tikTokStatus, setTikTokStatus] = useState<TikTokStatusResponse | null>(null);
-  const [tikTokKeyInput, setTikTokKeyInput] = useState("");
-  const [tikTokSecretInput, setTikTokSecretInput] = useState("");
+  const [tikTokKeyInput, setTikTokKeyInput] = useState("awskq2nyl73e2300");
+  const [tikTokSecretInput, setTikTokSecretInput] = useState("zq1Y0l0kUFzyNxBqFg1fHsNrwgWn6id5");
   const [savingTikTok, setSavingTikTok] = useState(false);
   const [tikTokFeedback, setTikTokFeedback] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
