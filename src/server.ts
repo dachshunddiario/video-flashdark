@@ -1920,6 +1920,49 @@ async function handleAgendamentosApi(request: Request): Promise<Response> {
     }
   }
 
+  // 8.4. POST /api/agendamentos/meta-connections/tiktok — Vincula ou desvincula TikTok de um perfil/marca
+  if (pathname === "/api/agendamentos/meta-connections/tiktok" && request.method === "POST") {
+    try {
+      const body = (await request.json().catch(() => ({}))) as any;
+      const { connectionId, action, handle, tikTok } = body;
+      if (!connectionId) {
+        return new Response(JSON.stringify({ success: false, message: "connectionId é obrigatório." }), {
+          status: 400,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+
+      if (action === "disconnect") {
+        await updateConnectionTikTok(connectionId, {
+          accessToken: undefined,
+          refreshToken: undefined,
+          openId: undefined,
+          displayName: undefined,
+          avatarUrl: undefined,
+          expiresAt: undefined,
+        });
+      } else if (handle) {
+        const clean = handle.trim().replace(/^@/, "");
+        await updateConnectionTikTok(connectionId, {
+          displayName: clean,
+          accessToken: "manual_linked",
+        });
+      } else if (tikTok) {
+        await updateConnectionTikTok(connectionId, tikTok);
+      }
+
+      const connections = await getAllMetaConnections();
+      return new Response(JSON.stringify({ success: true, connections }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    } catch (err: any) {
+      return new Response(JSON.stringify({ success: false, message: err.message }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+  }
+
   // 9. GET ou POST /api/agendamentos/accounts — Lista todas as contas Instagram vinculadas e Páginas do Facebook
   if (pathname === "/api/agendamentos/accounts") {
     try {

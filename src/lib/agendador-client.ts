@@ -251,5 +251,36 @@ export async function disconnectTikTokApi(profileId?: string): Promise<{ success
   return data;
 }
 
+export async function linkProfileTikTokHandleApi(
+  connectionId: string,
+  handle: string,
+): Promise<{ success: boolean; connections: import("./types").MetaConnection[] }> {
+  const res = await fetch("/api/agendamentos/meta-connections/tiktok", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ connectionId, handle }),
+  });
+  const data = await res.json();
+  if (!res.ok || !data.success) {
+    throw new Error(data.message || "Erro ao vincular conta TikTok ao perfil.");
+  }
+  return data;
+}
+
+export async function disconnectProfileTikTokApi(
+  connectionId: string,
+): Promise<{ success: boolean; connections: import("./types").MetaConnection[] }> {
+  const res = await fetch("/api/agendamentos/meta-connections/tiktok", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ connectionId, action: "disconnect" }),
+  });
+  const data = await res.json();
+  if (!res.ok || !data.success) {
+    throw new Error(data.message || "Erro ao desvincular conta TikTok.");
+  }
+  return data;
+}
+
 
 

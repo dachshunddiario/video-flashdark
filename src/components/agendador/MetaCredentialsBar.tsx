@@ -36,6 +36,8 @@ import {
   saveTikTokConfigApi,
   getTikTokAuthUrlApi,
   disconnectTikTokApi,
+  linkProfileTikTokHandleApi,
+  disconnectProfileTikTokApi,
   type TikTokStatusResponse,
 } from "@/lib/agendador-client";
 
@@ -139,6 +141,37 @@ export function MetaCredentialsBar({
     window.addEventListener("message", handleMessage);
     return () => window.removeEventListener("message", handleMessage);
   }, [selectedProfileForTikTok]);
+
+  const [editingTikTokConnId, setEditingTikTokConnId] = useState<string | null>(null);
+  const [manualTikTokHandle, setManualTikTokHandle] = useState<string>("");
+  const [savingTikTokHandle, setSavingTikTokHandle] = useState<boolean>(false);
+
+  const handleSaveDirectTikTok = async (connId: string) => {
+    if (!manualTikTokHandle.trim()) return;
+    setSavingTikTokHandle(true);
+    try {
+      const res = await linkProfileTikTokHandleApi(connId, manualTikTokHandle.trim());
+      setConnectionsList(res.connections);
+      if (onRefreshConnections) onRefreshConnections();
+      setEditingTikTokConnId(null);
+      setManualTikTokHandle("");
+    } catch (err: any) {
+      alert(err.message || "Erro ao vincular TikTok");
+    } finally {
+      setSavingTikTokHandle(false);
+    }
+  };
+
+  const handleDisconnectProfileTikTok = async (connId: string) => {
+    if (!confirm("Deseja desvincular o TikTok deste perfil?")) return;
+    try {
+      const res = await disconnectProfileTikTokApi(connId);
+      setConnectionsList(res.connections);
+      if (onRefreshConnections) onRefreshConnections();
+    } catch (err: any) {
+      alert(err.message || "Erro ao desvincular TikTok");
+    }
+  };
 
   const handleConnectTikTok = async () => {
     try {
@@ -492,11 +525,11 @@ export function MetaCredentialsBar({
                 setConnSuccess(null);
                 setConnectionsModalOpen(true);
               }}
-              title="Gerenciar múltiplos perfis Meta e tokens isolados"
+              title="Gerenciar múltiplos perfis e marcas de clientes (Instagram, Facebook e TikTok isolados)"
               className="inline-flex items-center gap-1.5 rounded-lg border border-primary/40 bg-primary/15 px-3 py-1.5 text-xs font-semibold text-primary transition-all hover:bg-primary/25 shadow-sm"
             >
               <Layers className="size-3.5" />
-              Perfis Meta ({connectionsList.length || 1})
+              Perfis & Clientes ({connectionsList.length || 1})
             </button>
 
             <button
@@ -850,37 +883,94 @@ export function MetaCredentialsBar({
                       </div>
 
                       {/* Canal TikTok Deste Perfil */}
-                      <div className="rounded-lg border border-cyan-500/30 bg-cyan-950/20 p-2.5 flex flex-wrap items-center justify-between gap-2">
+                      <div className="rounded-lg border border-cyan-500/30 bg-cyan-950/20 p-3 space-y-2">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
                           <div className="flex items-center gap-2">
                             <span className="size-6 rounded-md bg-black border border-cyan-400/40 grid place-items-center text-xs text-cyan-400 font-bold">
                               🎵
                             </span>
                             <div>
-                              <div className="text-xs font-semibold text-foreground">
-                                {conn.tikTok?.displayName
-                                  ? `TikTok: @${conn.tikTok.displayName}`
-                                  : "TikTok: Não Conectado"}
+                              <div className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+                                <span>{conn.tikTok?.displayName ? `TikTok: @${conn.tikTok.displayName}` : "TikTok: Não Vinculado"}</span>
+                                {conn.tikTok?.displayName && (
+                                  <span className="rounded bg-cyan-500/15 border border-cyan-500/30 px-1.5 py-0.2 text-[9px] font-semibold text-cyan-300">
+                                    {conn.tikTok.accessToken === "manual_linked" ? "Vinculado" : "OAuth Ativo"}
+                                  </span>
+                                )}
                               </div>
                               <div className="text-[10px] text-muted-foreground">
-                                {conn.tikTok?.accessToken
-                                  ? "OAuth 2.0 ativo · Publicação direta habilitada"
-                                  : "Clique para conectar o TikTok deste perfil"}
+                                {conn.tikTok?.displayName
+                                  ? "Pronto para receber publicações do agendador Flash"
+                                  : "Vincule a conta TikTok deste cliente pelo @ ou login oficial"}
                               </div>
                             </div>
                           </div>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setSelectedProfileForTikTok(conn.id);
-                              loadTikTokStatus(conn.id);
-                              setTikTokModalOpen(true);
-                            }}
-                            className="rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-2.5 py-1 text-[11px] font-semibold text-cyan-300 hover:bg-cyan-500/20 transition-all shadow-xs"
-                          >
-                            {conn.tikTok?.accessToken ? "Reconectar TikTok" : "Conectar TikTok"}
-                          </button>
+
+                          <div className="flex items-center gap-1.5">
+                            {conn.tikTok?.displayName ? (
+                              <button
+                                type="button"
+                                onClick={() => handleDisconnectProfileTikTok(conn.id)}
+                                className="rounded-lg border border-red-500/30 bg-red-500/10 px-2 py-1 text-[11px] font-semibold text-red-300 hover:bg-red-500/20 transition-all"
+                              >
+                                Desvincular
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEditingTikTokConnId(conn.id);
+                                  setManualTikTokHandle(conn.tikTok?.displayName ? `@${conn.tikTok.displayName}` : "");
+                                }}
+                                className="rounded-lg border border-cyan-500/40 bg-cyan-500/15 px-2 py-1 text-[11px] font-semibold text-cyan-300 hover:bg-cyan-500/25 transition-all shadow-xs"
+                              >
+                                Informar @ do Cliente
+                              </button>
+                            )}
+
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelectedProfileForTikTok(conn.id);
+                                loadTikTokStatus(conn.id);
+                                setTikTokModalOpen(true);
+                              }}
+                              className="rounded-lg border border-border bg-secondary/60 px-2 py-1 text-[11px] font-semibold text-muted-foreground hover:bg-secondary hover:text-foreground transition-all"
+                            >
+                              Login Oficial
+                            </button>
+                          </div>
                         </div>
+
+                        {/* Campo para Informar @ do Cliente Diretamente */}
+                        {editingTikTokConnId === conn.id && (
+                          <div className="pt-2 border-t border-cyan-500/20 flex items-center gap-2">
+                            <input
+                              type="text"
+                              value={manualTikTokHandle}
+                              onChange={(e) => setManualTikTokHandle(e.target.value)}
+                              placeholder="ex: @dachshunddiario ou @catalogueipravoce"
+                              className="flex-1 rounded-lg border border-border bg-secondary/80 px-2.5 py-1 text-xs text-foreground placeholder:text-muted-foreground focus:border-cyan-500 focus:outline-none"
+                            />
+                            <button
+                              type="button"
+                              disabled={savingTikTokHandle || !manualTikTokHandle.trim()}
+                              onClick={() => handleSaveDirectTikTok(conn.id)}
+                              className="rounded-lg bg-cyan-600 px-3 py-1 text-xs font-semibold text-white hover:bg-cyan-500 transition-all disabled:opacity-50"
+                            >
+                              {savingTikTokHandle ? "Salvando..." : "Salvar @"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setEditingTikTokConnId(null)}
+                              className="rounded-lg border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-secondary"
+                            >
+                              Cancelar
+                            </button>
+                          </div>
+                        )}
                       </div>
+                    </div>
                   );
                 })
               )}
@@ -1470,6 +1560,29 @@ export function MetaCredentialsBar({
               </div>
               <div className="pt-1 text-[11px] text-muted-foreground leading-relaxed">
                 💡 <strong className="text-foreground">Dica do Vídeo:</strong> Em <em>Roles & Permissions &gt; Staging Testers</em> no Portal do TikTok, adicione seu nome de usuário TikTok para publicar e testar de imediato sem ter que aguardar aprovação de revisão pública!
+              </div>
+            </div>
+
+            {/* Aviso e Solução do Erro client_key */}
+            <div className="mt-4 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3.5 text-xs space-y-2">
+              <div className="font-bold text-amber-300 flex items-center gap-1.5">
+                <AlertCircle className="size-4 shrink-0 text-amber-400" />
+                <span>Por que o TikTok exibiu "client_key"?</span>
+              </div>
+              <p className="text-muted-foreground text-[11px] leading-relaxed">
+                Como seu aplicativo no TikTok ainda está <strong className="text-amber-200">Em Análise (In Review)</strong>, o TikTok bloqueia o login de qualquer conta que não esteja na lista de testadores.
+              </p>
+              <div className="rounded-lg bg-black/40 p-2.5 text-[11px] space-y-1.5 border border-border">
+                <p className="font-semibold text-foreground">Como autorizar qualquer conta cliente agora:</p>
+                <ol className="list-decimal pl-4 space-y-1 text-muted-foreground">
+                  <li>No <a href="https://developers.tiktok.com/" target="_blank" rel="noreferrer" className="text-cyan-400 underline">TikTok Developer Portal</a>, vá no menu lateral em <strong>Roles & Permissions &gt; Staging Testers</strong>.</li>
+                  <li>Clique em <strong>Add Tester</strong> e digite o <strong className="text-foreground">@usuario</strong> da conta do TikTok que você quer logar.</li>
+                  <li>Abra o TikTok dessa conta no celular (aba Notificações &gt; Notificações do Sistema) e aceite o convite.</li>
+                  <li>Pronto! Você poderá clicar em <strong>Salvar e Conectar com TikTok</strong> normalmente!</li>
+                </ol>
+                <p className="text-[10px] text-cyan-300 pt-1">
+                  ⭐ <em>Você também pode vincular a conta do cliente diretamente sem login no botão <strong>Perfis & Clientes &gt; Informar @ do Cliente</strong>!</em>
+                </p>
               </div>
             </div>
 
