@@ -273,21 +273,22 @@ interface NvencJobState {
 
 const activeNvencJobs = new Map<string, NvencJobState>();
 
-// Limpeza de jobs expirados a cada minuto (> 5 minutos de inatividade)
-setInterval(() => {
+// Limpeza de jobs expirados sob demanda (> 5 minutos de inatividade)
+function cleanupExpiredNvencJobs() {
   const now = Date.now();
   for (const [id, job] of activeNvencJobs.entries()) {
     if (now - job.updatedAt > 5 * 60 * 1000) {
       activeNvencJobs.delete(id);
     }
   }
-}, 60 * 1000);
+}
 
 /**
  * Roteamento da API de Renderização com NVIDIA NVENC + CUDA (/api/render-nvenc).
  * Descarrega 100% do processamento do vídeo para a GPU RTX 3090 com aceleração de hardware instantânea.
  */
 async function handleNvencApi(request: Request): Promise<Response> {
+  cleanupExpiredNvencJobs();
   const url = new URL(request.url);
   const ffmpegPath = getNvencFfmpegPath();
 
